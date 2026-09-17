@@ -4,13 +4,19 @@
 
 Chosen from the options evaluated for `_docs/plan.md`:
 
-- **Framework**: Next.js (TypeScript, App Router), single full-stack app
-- **Database**: Postgres, hosted on Supabase
-- **ORM**: Prisma
-- **Auth**: Supabase Auth (email/password) — not a separate Auth.js/Prisma-managed user table
+- **Runtime**: Node.js 24 (current LTS line; Node 26 doesn't reach LTS until October 2026)
+- **Framework**: Next.js 16.3.5 (TypeScript, App Router), single full-stack app
+- **Language**: TypeScript 7.0.2
+- **Styling**: Tailwind CSS 4.3.3
+- **Database**: Postgres 17, hosted on Supabase (17 is the platform default for new projects)
+- **ORM**: Prisma 7.9.0 — Prisma 8 exists only as a release candidate (`8.0.0-rc.x`) as of September 2026; stick with the 7.x stable line until 8 reaches GA, then revisit
+- **Auth**: Supabase Auth (email/password) via `@supabase/supabase-js` 2.116.0 and `@supabase/ssr` 0.12.5 — not a separate Auth.js/Prisma-managed user table
+- **Validation**: Zod 4.6.5
 - **Storage**: Supabase Storage, for bracket item images
 - **Background processing**: a scheduled cron job (not lazy/on-read evaluation) drives round expiration and automatic advancement
 - **Hosting**: Vercel (app) + Supabase (DB/auth/storage)
+
+Versions above reflect latest-stable as of September 2026 (verified via web search); re-check before scaffolding if this doc is acted on much later.
 
 ## Why these choices
 
@@ -39,7 +45,11 @@ Scoped from `_docs/plan.md` §21's "Recommended Development Order" — project s
 
 1. **Scaffold the app** — `create-next-app` (TypeScript, App Router, Tailwind CSS, ESLint, `src/` directory). `git init` + initial commit.
 
-2. **Dependencies** — `prisma`, `@prisma/client`, `@supabase/supabase-js`, `@supabase/ssr`, `zod`.
+2. **Dependencies** (pinned to latest-stable as of September 2026 — confirm current versions at scaffold time):
+   - `next@16.3.5`, `typescript@7.0.2`, `tailwindcss@4.3.3`
+   - `prisma@7.9.0`, `@prisma/client@7.9.0`
+   - `@supabase/supabase-js@2.116.0`, `@supabase/ssr@0.12.5`
+   - `zod@4.6.5`
 
 3. **Env vars** — `.env.example` with `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, `DIRECT_URL`, `CRON_SECRET`.
 
