@@ -1,3 +1,7 @@
+Documents
+
+- `_docs/process.md` - how work is organized
+
 Commands
 
 - `npm install` - install dependencies
