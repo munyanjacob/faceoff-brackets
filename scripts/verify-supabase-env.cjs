@@ -1,5 +1,8 @@
 // One-off Supabase credential check for issue #2 (not wired into the app or its dependencies).
-// pg isn't a project dependency; run with: npx -y -p pg node --env-file=.env.local scripts/verify-supabase-env.cjs
+// pg isn't a project dependency. Run from the repo root:
+//   npm install --no-save pg
+//   node --env-file=.env.local scripts/verify-supabase-env.cjs
+//   npm install   (prunes pg back out; package.json/package-lock.json are never touched)
 const pg = require("pg");
 
 const required = [
