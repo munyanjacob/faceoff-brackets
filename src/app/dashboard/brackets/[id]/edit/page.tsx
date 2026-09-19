@@ -3,12 +3,17 @@ import { createClient } from "@/lib/supabase/server";
 import { prisma } from "@/lib/prisma";
 import { AddItemForm } from "./add-item-form";
 import { ItemRow } from "./item-row";
+import { RoundDurationForm } from "./round-duration-form";
+import {
+  computeTotalRounds,
+  parseStoredRoundDurationOverrides,
+} from "./round-duration";
 
 /**
  * `/dashboard/brackets/[id]/edit` - a draft bracket's item list (issue
- * #11), replacing the #10 placeholder that used to live here. #12-#14 still
- * build the rest of the editor (image upload, round durations, start time)
- * on this same route.
+ * #11) plus its round-duration configuration (issue #13), replacing the
+ * #10 placeholder that used to live here. #12/#14 still build the rest of
+ * the editor (image upload, start time) on this same route.
  *
  * Still does a real ownership-scoped lookup (rather than trusting the URL's
  * `id` outright) per the Next.js Server Actions/Server Components security
@@ -55,16 +60,31 @@ export default async function EditBracketPage({
   });
 
   const isDraft = bracket.status === "DRAFT";
+  const totalRounds = computeTotalRounds(items.length);
+  const roundDurationOverrides = parseStoredRoundDurationOverrides(
+    bracket.roundDurationOverrides
+  );
 
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-xl font-semibold">
         Editing &quot;{bracket.title}&quot;
       </h1>
-      <p>
-        #12-#14 build the rest of the real editor (image upload, round
-        durations, start time) here.
-      </p>
+      <p>#12/#14 build the rest of the real editor (image upload, start time) here.</p>
+
+      {isDraft ? (
+        <RoundDurationForm
+          bracketId={bracket.id}
+          defaultRoundDurationMinutes={bracket.defaultRoundDurationMinutes}
+          overrides={roundDurationOverrides}
+          totalRounds={totalRounds}
+        />
+      ) : (
+        <p>
+          This bracket is no longer a draft, so its round duration can&apos;t
+          be changed.
+        </p>
+      )}
 
       <section className="flex flex-col gap-4">
         <h2 className="text-lg font-semibold">Items</h2>

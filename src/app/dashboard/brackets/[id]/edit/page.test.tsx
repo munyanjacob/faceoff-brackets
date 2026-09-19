@@ -147,6 +147,78 @@ describe("/dashboard/brackets/[id]/edit page", () => {
     expect(html).toMatch(/no longer a draft/i);
   });
 
+  it("passes the live item-count-derived total rounds and parsed overrides to the round duration form while a DRAFT", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "DRAFT",
+      defaultRoundDurationMinutes: 90,
+      roundDurationOverrides: { "2": 45 },
+    });
+    itemFindMany.mockResolvedValue([
+      { id: "item-1", title: "A", description: null },
+      { id: "item-2", title: "B", description: null },
+      { id: "item-3", title: "C", description: null },
+      { id: "item-4", title: "D", description: null },
+    ]);
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    // 4 items -> ceil(log2(4)) = 2 rounds.
+    expect(html).toContain('"totalRounds":2');
+    expect(html).toContain('"defaultRoundDurationMinutes":90');
+    expect(html).toContain('"overrides":{"2":45}');
+  });
+
+  it("does not crash rendering a bracket whose stored overrides include a round number beyond the current total", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "DRAFT",
+      defaultRoundDurationMinutes: 60,
+      // Stale: was set back when there were more items.
+      roundDurationOverrides: { "5": 999 },
+    });
+    itemFindMany.mockResolvedValue([
+      { id: "item-1", title: "A", description: null },
+    ]);
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).toContain('"totalRounds":0');
+    // Carried through as-is (harmless - just never rendered as a round
+    // input row since totalRounds is 0); this issue's job is only to not
+    // crash on it, per the acceptance criteria and #18.
+    expect(html).toContain('"overrides":{"5":999}');
+  });
+
+  it("omits the round duration form and shows a locked message once the bracket is no longer a DRAFT", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "ACTIVE",
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+    });
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).not.toContain("defaultRoundDurationMinutes");
+    expect(html).toMatch(/round duration can.t be changed/i);
+  });
+
   it("404s instead of leaking a bracket that doesn't belong to the signed-in creator", async () => {
     bracketFindFirst.mockResolvedValue(null);
 
