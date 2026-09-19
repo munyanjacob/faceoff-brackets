@@ -3,11 +3,13 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import { updateItem, removeItem, initialItemFormState } from "./actions";
+import { ALLOWED_IMAGE_MIME_TYPES } from "./validation";
 
 export type BracketItemRow = {
   id: string;
   title: string;
   description: string | null;
+  imageUrl: string | null;
 };
 
 /**
@@ -21,6 +23,16 @@ export type BracketItemRow = {
  * `Function.prototype.bind` (the Next.js forms guide's "Passing additional
  * arguments" pattern), the same as `./add-item-form.tsx` does for
  * `addItem`.
+ *
+ * Issue #12 adds `item.imageUrl`: rendered (when present) both read-only
+ * and in the edit form, plus a file input in the edit form to upload a new
+ * image or replace the existing one. Leaving the file input empty on save
+ * keeps the current image - `./validation.ts`/`./actions.ts` only touch
+ * `image_url` when a new file was actually chosen. A plain `<img>` (rather
+ * than `next/image`) is used deliberately: these are user-uploaded, unknown
+ * aspect ratio images from an external (Supabase Storage) domain, and
+ * `next/image` needs either explicit `width`/`height` or a `next.config.ts`
+ * `images.remotePatterns` entry - out of scope for this MVP thumbnail.
  */
 export function ItemRow({
   bracketId,
@@ -46,6 +58,14 @@ export function ItemRow({
   if (!isDraft) {
     return (
       <div className="flex flex-col gap-1 border p-3">
+        {item.imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={item.imageUrl}
+            alt={item.title}
+            className="h-24 w-24 object-cover"
+          />
+        ) : null}
         <p className="font-medium">{item.title}</p>
         {item.description ? <p>{item.description}</p> : null}
       </div>
@@ -54,7 +74,11 @@ export function ItemRow({
 
   return (
     <div className="flex flex-col gap-2 border p-3">
-      <form action={updateAction} className="flex flex-col gap-1">
+      <form
+        action={updateAction}
+        encType="multipart/form-data"
+        className="flex flex-col gap-1"
+      >
         <label htmlFor={`item-title-${item.id}`}>Title</label>
         <input
           id={`item-title-${item.id}`}
@@ -72,6 +96,24 @@ export function ItemRow({
           name="description"
           defaultValue={item.description ?? ""}
           rows={2}
+        />
+
+        {item.imageUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={item.imageUrl}
+            alt={item.title}
+            className="h-24 w-24 object-cover"
+          />
+        ) : null}
+        <label htmlFor={`item-image-${item.id}`}>
+          {item.imageUrl ? "Replace image (optional)" : "Image (optional)"}
+        </label>
+        <input
+          id={`item-image-${item.id}`}
+          name="image"
+          type="file"
+          accept={ALLOWED_IMAGE_MIME_TYPES.join(",")}
         />
 
         <p aria-live="polite">{updateState.error}</p>

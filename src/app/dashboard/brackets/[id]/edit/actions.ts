@@ -5,14 +5,23 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 import { validateBracketItemForm } from "./validation";
+import { uploadBracketItemImage } from "./image-upload";
 
 /**
  * Server Actions backing the item list on a draft bracket's edit page
- * (issue #11). `./validation.ts` has the pure title/description
- * validation; these wrap it with the actual `prisma.bracketItem` calls.
+ * (issue #11, extended by #12 for the optional item image).
+ * `./validation.ts` has the pure title/description/image validation; these
+ * wrap it with the actual `prisma.bracketItem` calls and, when a validated
+ * image file is present, `./image-upload.ts`'s Supabase Storage upload.
  * Signature/`prevState` shape follows the same pattern as `../new/actions.ts`
  * (issue #10) - see the Next.js "Validation errors" guide
  * (`node_modules/next/dist/docs/01-app/02-guides/forms.md`).
+ *
+ * A validated image is uploaded *after* the title/description validation
+ * and *before* the `prisma.bracketItem` call, so a bad title never triggers
+ * a needless upload, and an upload failure (network/Storage error) returns
+ * a normal validation-style error instead of creating/updating a row with
+ * no image.
  *
  * `bracketId` (and, for `updateItem`/`removeItem`, `itemId`) are bound onto
  * each action with `Function.prototype.bind` in the Client Components that
@@ -42,6 +51,8 @@ export const initialItemFormState: ItemFormState = { error: null };
 
 const NOT_DRAFT_ERROR =
   "This bracket is no longer a draft, so its items can't be changed.";
+
+const IMAGE_UPLOAD_ERROR = "Failed to upload the image. Please try again.";
 
 async function requireOwnedBracket(bracketId: string) {
   const supabase = await createClient();
@@ -80,11 +91,21 @@ export async function addItem(
     return { error: validated.error };
   }
 
+  let imageUrl: string | null = null;
+  if (validated.data.image) {
+    try {
+      imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
+    } catch {
+      return { error: IMAGE_UPLOAD_ERROR };
+    }
+  }
+
   await prisma.bracketItem.create({
     data: {
       bracketId: bracket.id,
       title: validated.data.title,
       description: validated.data.description,
+      imageUrl,
     },
   });
 
@@ -116,11 +137,25 @@ export async function updateItem(
     return { error: validated.error };
   }
 
+  // No new file was chosen: `imageUrl` stays `undefined`, so the spread
+  // below omits the key entirely and Prisma leaves the existing
+  // `image_url` untouched - the image is optional and replacing it is only
+  // supposed to happen when a new file is actually uploaded (issue #12).
+  let imageUrl: string | undefined;
+  if (validated.data.image) {
+    try {
+      imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
+    } catch {
+      return { error: IMAGE_UPLOAD_ERROR };
+    }
+  }
+
   await prisma.bracketItem.update({
     where: { id: item.id },
     data: {
       title: validated.data.title,
       description: validated.data.description,
+      ...(imageUrl ? { imageUrl } : {}),
     },
   });
 
