@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -8,86 +8,110 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 // `.env.local`, following the live-Supabase pattern already established in
 // `./actions.integration.test.ts`.
 //
-// Reading `public.profiles` back is deliberately *not* done through
-// Prisma or through Supabase's data API (PostgREST) with the service-role
-// key - both are unavailable here:
+// Reading `public.profiles` back is done with a raw `pg` client against
+// `DIRECT_URL`, the same disposable-dependency pattern already established
+// by `scripts/verify-supabase-env.cjs`: `pg` is deliberately *not* a project
+// dependency (nothing in `package.json`/`package-lock.json` references it),
+// so install it ad hoc before running this suite against live credentials:
 //
-//   - Prisma 7's generated client refuses to run any query without a
-//     driver adapter (e.g. `@prisma/adapter-pg`) passed to its
-//     constructor. None is installed, and AGENTS.md requires asking
-//     before adding a dependency.
-//   - `public.profiles` was created by a Prisma-run migration connected
-//     directly as the database owner, so it doesn't carry the default
-//     privilege grants Supabase normally sets up for tables created
-//     through its own tooling - PostgREST returns "permission denied for
-//     table profiles" for every role, `service_role` included (confirmed
-//     by hand against the live project).
+//   npm install --no-save pg
+//   npm test
+//   npm install   (prunes pg back out; package.json/package-lock.json are
+//                  never touched)
 //
-// Instead this uses `public.get_profile_for_verification()`
-// (`prisma/migrations/20260919134622_add_profile_lookup_for_verification`),
-// a narrow, read-only, SECURITY DEFINER function added specifically to
-// give this test (and no one else, since it's the only caller) a way to
-// read a profile row by id without granting broader table access. See
-// that migration's comment and the #7 issue comment for the full
-// rationale, including why a plain `GRANT SELECT ... TO service_role` was
-// not used instead.
+// Two other ways of reading `profiles` back were considered and rejected:
+//   - Prisma's generated client refuses to run any query without a driver
+//     adapter (e.g. `@prisma/adapter-pg`) passed to its constructor - none
+//     is installed, and AGENTS.md requires asking before adding a
+//     dependency.
+//   - Supabase's data API (PostgREST) with the service-role key: `profiles`
+//     doesn't carry the default privilege grants Supabase normally sets up
+//     for tables created through its own tooling (it was created by a
+//     Prisma-run migration connecting directly as the DB owner), so
+//     PostgREST returns "permission denied for table profiles" for every
+//     role, `service_role` included (confirmed by hand against the live
+//     project).
+//
+// A prior pass instead shipped a `SECURITY DEFINER` Postgres function
+// (`get_profile_for_verification`, migration
+// `20260919134622_add_profile_lookup_for_verification`) purely to give this
+// test a read path. QA proved that function was callable by the fully
+// unauthenticated `anon` role (no GRANT/REVOKE was added, so Postgres's
+// default EXECUTE-to-PUBLIC applies) and, being `SECURITY DEFINER`, bypassed
+// RLS entirely - a real, unauthenticated way to read any user's email by
+// UUID. That migration has been deleted and the function dropped from the
+// live database; this test no longer depends on it. A raw `pg` client
+// connecting with the same credentials `prisma migrate` itself uses
+// (`DIRECT_URL`) reads `profiles` directly instead, without touching any
+// production grant.
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const hasLiveCredentials = Boolean(url && anonKey && serviceRoleKey);
 
-type ProfileRow = { id: string; email: string; display_name: string | null };
-
-/**
- * Runs a SQL script against the real database via `prisma db execute`,
- * using the same direct (non-pooled) connection Prisma Migrate itself
- * uses. This is only used here for test cleanup (deleting the one
- * `profiles` row this suite creates) - something no currently-granted
- * Supabase API role can do, for the same reason described above.
- *
- * `DIRECT_URL`/`DATABASE_URL` are deliberately stripped from the child's
- * environment before spawning: Vitest's own env loading
- * (`vitest.config.ts`) already populates `process.env` in this worker,
- * but `prisma7.config.ts` calls `process.loadEnvFile(".env.local")` to
- * resolve these itself, and Node's `loadEnvFile` does not override
- * variables that are already set. Left in place, the child process would
- * silently inherit Vitest's copy instead of loading its own, and Vitest's
- * `loadEnv` does not parse `.env.local` byte-for-byte identically to
- * `process.loadEnvFile` - close enough to look right, different enough to
- * fail Postgres auth (observed directly while building this test).
- * Stripping them forces the child to load its own, known-good copy the
- * same way running `npx prisma db execute` from a shell does.
- */
-async function dbExecute(
-  sql: string
-): Promise<{ code: number; stdout: string; stderr: string }> {
-  const childEnv = { ...process.env };
-  delete childEnv.DIRECT_URL;
-  delete childEnv.DATABASE_URL;
-
-  return new Promise((resolve) => {
-    const child = execFile(
-      process.execPath,
-      ["node_modules/prisma/build/index.js", "db", "execute", "--stdin"],
-      { cwd: process.cwd(), env: childEnv }
-    );
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (d) => (stdout += d));
-    child.stderr?.on("data", (d) => (stderr += d));
-    child.stdin?.write(sql);
-    child.stdin?.end();
-    child.on("close", (code) => resolve({ code: code ?? 1, stdout, stderr }));
-  });
+// `vitest.config.ts` loads `.env.local` via Vite's `loadEnv`, which runs
+// shell-style `$VAR` interpolation over every value (dotenv-expand
+// semantics). This project's real `DIRECT_URL` password contains `$`
+// sequences that happen to look like variable references (e.g. `$Q...`),
+// so Vite's copy of `process.env.DIRECT_URL` silently mangles the password
+// and any real connection with it fails Postgres auth - confirmed by hand.
+// `prisma7.config.ts` sidesteps this entirely by using Node's own
+// `process.loadEnvFile`, which does plain literal assignment with no
+// interpolation. `process.loadEnvFile` never overwrites a key that's
+// already set, so deleting Vite's (wrong) value first forces a fresh,
+// correctly-parsed read straight from the file, matching exactly what
+// `prisma migrate`/`prisma db execute` themselves connect with.
+function readDirectUrlFromEnvFile(): string | undefined {
+  delete process.env.DIRECT_URL;
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // .env.local is gitignored and may not exist (e.g. CI) - fall through
+    // with DIRECT_URL left unset, same as prisma7.config.ts.
+  }
+  return process.env.DIRECT_URL;
 }
 
-describe.runIf(hasLiveCredentials)(
+type ProfileRow = { id: string; email: string; display_name: string | null };
+
+// Loaded via `createRequire` (an untyped `require`), not a static/dynamic
+// `import`, so this file still type-checks cleanly with `tsc --noEmit`
+// whether or not `pg` is installed - the return type is kept as `any`
+// rather than `typeof import("pg")` so tsc never needs to resolve `pg`'s
+// types either.
+//
+// `pg` is only ever installed transiently (`npm install --no-save pg`, see
+// the file-level comment above) for someone running this suite by hand
+// against live credentials - it is deliberately absent in CI and on a
+// fresh checkout. Resolving it eagerly here, wrapped in try/catch, lets
+// collection succeed either way and lets both gates below (live
+// credentials, `pg` installed) be checked independently instead of letting
+// a missing module crash `beforeAll` when credentials happen to be
+// configured but `pg` isn't installed.
+const nodeRequire = createRequire(import.meta.url);
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadPg(): any {
+  try {
+    return nodeRequire("pg");
+  } catch {
+    return undefined;
+  }
+}
+
+const pgModule = loadPg();
+const pgAvailable = pgModule !== undefined;
+
+describe.runIf(hasLiveCredentials && pgAvailable)(
   "auth.users -> public.profiles sync trigger, against the live Supabase project",
   () => {
     const admin = hasLiveCredentials
       ? createSupabaseClient(url!, serviceRoleKey!)
       : undefined;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let pg: any;
 
     // A disposable, throwaway test address - never intended to receive
     // mail. Created via the admin API with `email_confirm: true` (not
@@ -100,8 +124,16 @@ describe.runIf(hasLiveCredentials)(
 
     let userId: string | undefined;
 
+    beforeAll(async () => {
+      const { Client } = pgModule;
+      pg = new Client({
+        connectionString: readDirectUrlFromEnvFile(),
+        ssl: { rejectUnauthorized: false },
+      });
+      await pg.connect();
+    });
+
     afterAll(async () => {
-      if (!admin) return;
       // The trigger only fires on `auth.users` INSERT, so deleting the
       // auth user does not cascade-delete the matching `profiles` row
       // (confirmed by hand: no FK exists from `profiles` to `auth.users`,
@@ -109,13 +141,12 @@ describe.runIf(hasLiveCredentials)(
       // up both rows explicitly so this suite never leaves test data
       // behind in the one live database this project has.
       if (userId) {
-        await dbExecute(
-          `DELETE FROM public.profiles WHERE id = '${userId}';`
-        );
+        await pg.query("DELETE FROM public.profiles WHERE id = $1", [
+          userId,
+        ]);
+        await admin!.auth.admin.deleteUser(userId);
       }
-      if (userId) {
-        await admin.auth.admin.deleteUser(userId);
-      }
+      await pg?.end();
     });
 
     it("creates exactly one matching profiles row, with display_name left NULL", async () => {
@@ -128,13 +159,11 @@ describe.runIf(hasLiveCredentials)(
       userId = data.user?.id;
       expect(userId).toBeTruthy();
 
-      const { data: rows, error: rpcError } = await admin!.rpc(
-        "get_profile_for_verification",
-        { lookup_id: userId }
+      const { rows } = await pg.query(
+        "SELECT id, email, display_name FROM public.profiles WHERE id = $1",
+        [userId]
       );
-      expect(rpcError).toBeNull();
-
-      const profiles = (rows ?? []) as ProfileRow[];
+      const profiles = rows as ProfileRow[];
       expect(profiles).toHaveLength(1);
       expect(profiles[0].id).toBe(userId);
       expect(profiles[0].email).toBe(testEmail);
@@ -163,9 +192,35 @@ describe.runIf(hasLiveCredentials)(
 
       // The orphaned `profiles` row this created is real test data too -
       // clean it up the same way.
-      await dbExecute(
-        `DELETE FROM public.profiles WHERE id = '${deleteCheckUserId}';`
-      );
+      await pg.query("DELETE FROM public.profiles WHERE id = $1", [
+        deleteCheckUserId,
+      ]);
     });
   }
 );
+
+// Live credentials are configured but `pg` isn't installed - the suite
+// above can't run. Register a clearly-explained skipped test (instead of
+// silently doing nothing, which is what `describe.runIf(hasLiveCredentials
+// && pgAvailable)` above does on its own) so a run of `npm test` explains
+// why this file's live coverage didn't execute, rather than looking like it
+// was never gated on `pg` at all.
+//
+// A plain `if`, not `describe.runIf`, gates this: `describe.runIf`'s
+// factory callback runs unconditionally to register structure (only the
+// `it`/hooks inside are actually skipped when the condition is false), so
+// a `console.warn` placed directly in that callback would fire on every
+// run of this file - including when `pg` is installed - rather than only
+// when the note is actually relevant.
+if (hasLiveCredentials && !pgAvailable) {
+  describe(
+    "auth.users -> public.profiles sync trigger, against the live Supabase project",
+    () => {
+      console.warn(
+        "[profile-sync.integration.test] Skipping: live Supabase credentials are configured, but the `pg` package isn't installed. Run `npm install --no-save pg` and re-run `npm test` to execute this suite locally."
+      );
+
+      it.skip("requires the `pg` package - run `npm install --no-save pg` to run this test locally", () => {});
+    }
+  );
+}
