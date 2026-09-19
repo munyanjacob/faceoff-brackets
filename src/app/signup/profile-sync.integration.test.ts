@@ -76,15 +76,34 @@ function readDirectUrlFromEnvFile(): string | undefined {
 type ProfileRow = { id: string; email: string; display_name: string | null };
 
 // Loaded via `createRequire` (an untyped `require`), not a static/dynamic
-// `import`, so this file still type-checks cleanly with `tsc --noEmit` and
-// still collects cleanly under Vitest when `pg` isn't installed - both
-// `require("pg")` calls below only ever execute inside a hook/test body
-// that's gated behind `hasLiveCredentials`, never at module- or
-// describe-body scope, so `describe.runIf(hasLiveCredentials)` skipping the
-// suite also skips ever resolving the module.
+// `import`, so this file still type-checks cleanly with `tsc --noEmit`
+// whether or not `pg` is installed - the return type is kept as `any`
+// rather than `typeof import("pg")` so tsc never needs to resolve `pg`'s
+// types either.
+//
+// `pg` is only ever installed transiently (`npm install --no-save pg`, see
+// the file-level comment above) for someone running this suite by hand
+// against live credentials - it is deliberately absent in CI and on a
+// fresh checkout. Resolving it eagerly here, wrapped in try/catch, lets
+// collection succeed either way and lets both gates below (live
+// credentials, `pg` installed) be checked independently instead of letting
+// a missing module crash `beforeAll` when credentials happen to be
+// configured but `pg` isn't installed.
 const nodeRequire = createRequire(import.meta.url);
 
-describe.runIf(hasLiveCredentials)(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function loadPg(): any {
+  try {
+    return nodeRequire("pg");
+  } catch {
+    return undefined;
+  }
+}
+
+const pgModule = loadPg();
+const pgAvailable = pgModule !== undefined;
+
+describe.runIf(hasLiveCredentials && pgAvailable)(
   "auth.users -> public.profiles sync trigger, against the live Supabase project",
   () => {
     const admin = hasLiveCredentials
@@ -106,7 +125,7 @@ describe.runIf(hasLiveCredentials)(
     let userId: string | undefined;
 
     beforeAll(async () => {
-      const { Client } = nodeRequire("pg");
+      const { Client } = pgModule;
       pg = new Client({
         connectionString: readDirectUrlFromEnvFile(),
         ssl: { rejectUnauthorized: false },
@@ -179,3 +198,29 @@ describe.runIf(hasLiveCredentials)(
     });
   }
 );
+
+// Live credentials are configured but `pg` isn't installed - the suite
+// above can't run. Register a clearly-explained skipped test (instead of
+// silently doing nothing, which is what `describe.runIf(hasLiveCredentials
+// && pgAvailable)` above does on its own) so a run of `npm test` explains
+// why this file's live coverage didn't execute, rather than looking like it
+// was never gated on `pg` at all.
+//
+// A plain `if`, not `describe.runIf`, gates this: `describe.runIf`'s
+// factory callback runs unconditionally to register structure (only the
+// `it`/hooks inside are actually skipped when the condition is false), so
+// a `console.warn` placed directly in that callback would fire on every
+// run of this file - including when `pg` is installed - rather than only
+// when the note is actually relevant.
+if (hasLiveCredentials && !pgAvailable) {
+  describe(
+    "auth.users -> public.profiles sync trigger, against the live Supabase project",
+    () => {
+      console.warn(
+        "[profile-sync.integration.test] Skipping: live Supabase credentials are configured, but the `pg` package isn't installed. Run `npm install --no-save pg` and re-run `npm test` to execute this suite locally."
+      );
+
+      it.skip("requires the `pg` package - run `npm install --no-save pg` to run this test locally", () => {});
+    }
+  );
+}
