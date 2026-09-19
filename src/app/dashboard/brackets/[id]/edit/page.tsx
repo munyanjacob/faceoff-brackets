@@ -1,20 +1,28 @@
 import { notFound } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { prisma } from "@/lib/prisma";
+import { AddItemForm } from "./add-item-form";
+import { ItemRow } from "./item-row";
 
 /**
- * `/dashboard/brackets/[id]/edit` - placeholder landing page for a newly
- * created draft (issue #10's Server Action redirects here). #11-#14 build
- * the real editor (items, round durations, start time) on this same route;
- * this issue only needs *a* page here so the redirect has somewhere valid
- * to land.
+ * `/dashboard/brackets/[id]/edit` - a draft bracket's item list (issue
+ * #11), replacing the #10 placeholder that used to live here. #12-#14 still
+ * build the rest of the editor (image upload, round durations, start time)
+ * on this same route.
  *
  * Still does a real ownership-scoped lookup (rather than trusting the URL's
  * `id` outright) per the Next.js Server Actions/Server Components security
  * guidance: derive identity from the session and look up by ownership, not
  * by an unchecked id from the request. A bracket that doesn't exist, or
  * isn't this signed-in creator's, 404s instead of leaking another
- * creator's title.
+ * creator's title or items.
+ *
+ * Items are queried scoped to `bracket.id` (never just trusted from
+ * elsewhere), so a creator only ever sees/edits their own bracket's items.
+ * Add/edit/remove controls (`<AddItemForm>`/`<ItemRow>`) are only usable
+ * while `Bracket.status === "DRAFT"` - `isDraft` is threaded down so
+ * `<ItemRow>` renders read-only, and the add form is swapped for a plain
+ * message once the bracket is no longer a draft.
  */
 export default async function EditBracketPage({
   params,
@@ -41,13 +49,55 @@ export default async function EditBracketPage({
     notFound();
   }
 
+  const items = await prisma.bracketItem.findMany({
+    where: { bracketId: bracket.id },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const isDraft = bracket.status === "DRAFT";
+
   return (
-    <div className="flex flex-col gap-2">
-      <h1 className="text-xl font-semibold">Editing &quot;{bracket.title}&quot;</h1>
+    <div className="flex flex-col gap-6">
+      <h1 className="text-xl font-semibold">
+        Editing &quot;{bracket.title}&quot;
+      </h1>
       <p>
-        This is a placeholder page - #11-#14 build the real editor (items,
-        round durations, start time) here.
+        #12-#14 build the rest of the real editor (image upload, round
+        durations, start time) here.
       </p>
+
+      <section className="flex flex-col gap-4">
+        <h2 className="text-lg font-semibold">Items</h2>
+
+        {items.length === 0 ? (
+          <p>No items yet.</p>
+        ) : (
+          <ul className="flex flex-col gap-3">
+            {items.map((item) => (
+              <li key={item.id}>
+                <ItemRow
+                  bracketId={bracket.id}
+                  item={{
+                    id: item.id,
+                    title: item.title,
+                    description: item.description,
+                  }}
+                  isDraft={isDraft}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {isDraft ? (
+          <AddItemForm bracketId={bracket.id} />
+        ) : (
+          <p>
+            This bracket is no longer a draft, so items can&apos;t be added,
+            edited, or removed.
+          </p>
+        )}
+      </section>
     </div>
   );
 }
