@@ -1,0 +1,149 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+// Prisma 7 rejects `url`/`directUrl` in this block (P1012) — the connection
+// URL used by Migrate/Studio is configured in prisma7.config.ts instead. See
+// the note on this in the issue #3 comment for why this deviates from a
+// literal reading of the acceptance criteria.
+datasource db {
+  provider = "postgresql"
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+}
+
+enum VotingRequirement {
+  ACCOUNT_REQUIRED
+  ANONYMOUS_ALLOWED
+}
+
+enum BracketStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  COMPLETED
+}
+
+enum RoundStatus {
+  PENDING
+  ACTIVE
+  COMPLETED
+}
+
+enum MatchupStatus {
+  PENDING
+  ACTIVE
+  TIE_BREAKER
+  COMPLETED
+}
+
+model Profile {
+  id          String   @id
+  email       String   @unique
+  displayName String?  @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  brackets Bracket[]
+  votes    Vote[]
+
+  @@map("profiles")
+}
+
+model Bracket {
+  id                           String            @id @default(uuid())
+  creatorId                    String            @map("creator_id")
+  title                        String
+  description                  String?
+  visibility                   Visibility
+  votingRequirement            VotingRequirement @map("voting_requirement")
+  defaultRoundDurationMinutes  Int               @map("default_round_duration_minutes")
+  roundDurationOverrides       Json?             @map("round_duration_overrides")
+  scheduledStartAt             DateTime?         @map("scheduled_start_at")
+  status                       BracketStatus
+  createdAt                    DateTime          @default(now()) @map("created_at")
+  publishedAt                  DateTime?         @map("published_at")
+
+  creator Profile      @relation(fields: [creatorId], references: [id], onDelete: Restrict)
+  items   BracketItem[]
+  rounds  Round[]
+
+  @@map("brackets")
+}
+
+model BracketItem {
+  id          String   @id @default(uuid())
+  bracketId   String   @map("bracket_id")
+  title       String
+  description String?
+  imageUrl    String?  @map("image_url")
+  seed        Int?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  bracket Bracket @relation(fields: [bracketId], references: [id], onDelete: Restrict)
+
+  matchupsAsItemA  Matchup[] @relation("MatchupItemA")
+  matchupsAsItemB  Matchup[] @relation("MatchupItemB")
+  matchupsAsWinner Matchup[] @relation("MatchupWinner")
+  votes            Vote[]
+
+  @@unique([bracketId, seed])
+  @@map("bracket_items")
+}
+
+model Round {
+  id              String      @id @default(uuid())
+  bracketId       String      @map("bracket_id")
+  roundNumber     Int         @map("round_number")
+  durationMinutes Int         @map("duration_minutes")
+  startsAt        DateTime?   @map("starts_at")
+  endsAt          DateTime?   @map("ends_at")
+  status          RoundStatus
+
+  bracket  Bracket   @relation(fields: [bracketId], references: [id], onDelete: Restrict)
+  matchups Matchup[]
+
+  @@map("rounds")
+}
+
+model Matchup {
+  id               String        @id @default(uuid())
+  roundId          String        @map("round_id")
+  itemAId          String?       @map("item_a_id")
+  itemBId          String?       @map("item_b_id")
+  winnerItemId     String?       @map("winner_item_id")
+  status           MatchupStatus
+  tieBreakerEndsAt DateTime?     @map("tie_breaker_ends_at")
+
+  round      Round        @relation(fields: [roundId], references: [id], onDelete: Restrict)
+  itemA      BracketItem? @relation("MatchupItemA", fields: [itemAId], references: [id], onDelete: Restrict)
+  itemB      BracketItem? @relation("MatchupItemB", fields: [itemBId], references: [id], onDelete: Restrict)
+  winnerItem BracketItem? @relation("MatchupWinner", fields: [winnerItemId], references: [id], onDelete: Restrict)
+  votes      Vote[]
+
+  @@map("matchups")
+}
+
+model Vote {
+  id                       String   @id @default(uuid())
+  matchupId                String   @map("matchup_id")
+  itemId                   String   @map("item_id")
+  userId                   String?  @map("user_id")
+  anonymousVoterIdentifier String?  @map("anonymous_voter_identifier")
+  comment                  String?
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  matchup Matchup     @relation(fields: [matchupId], references: [id], onDelete: Restrict)
+  item    BracketItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  user    Profile?    @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([matchupId, userId])
+  @@unique([matchupId, anonymousVoterIdentifier])
+  @@map("votes")
+}
