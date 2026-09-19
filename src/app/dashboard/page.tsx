@@ -1,29 +1,49 @@
+import { createClient } from "@/lib/supabase/server";
+import { prisma } from "@/lib/prisma";
+import { BracketList } from "./bracket-list";
+import { toBracketRow } from "./bracket-view-model";
+
 /**
- * `/dashboard` - still the placeholder from #6, NOT yet wired up to a live
- * query. Issue #8 ("Build the empty creator dashboard page") is blocked:
- * see the comment on that issue for the full writeup. Short version -
- * Prisma 7's generated client (`src/generated/prisma`) throws in its own
- * constructor unless a driver adapter (e.g. `@prisma/adapter-pg`, which
- * itself pulls in `pg`) is passed in, and no such adapter is installed or
- * pinned in `_docs/architecture.md`. AGENTS.md requires asking before
- * adding a dependency, so `src/lib/prisma.ts` (the singleton #8 permits
- * this issue to add) hasn't been created, and this page still can't query
- * `Bracket` rows.
+ * `/dashboard` - the signed-in creator's own brackets, newest first, or an
+ * explicit empty-state message when they have none yet (issue #8).
  *
- * The parts of #8 that don't need a database connection are already built
- * and unit-tested, ready to wire in once that dependency question is
- * resolved:
- * - `./bracket-view-model.ts` - `currentRoundNumber`, `formatCreatedAt`,
- *   `toBracketRow`
- * - `./bracket-list.tsx` - the `<BracketList>` presentational component
- *   (empty-state message, or a table of title/status/round/created-date)
+ * The signed-in/signed-out check itself lives in `./layout.tsx` (#6) - by
+ * the time this component renders, `supabase.auth.getUser()` is guaranteed
+ * to resolve with a user, since the layout already redirected to `/login`
+ * otherwise. It's called again here (rather than threading the id down)
+ * because Server Components have no other way to receive data from a
+ * parent layout.
  *
- * Once `src/lib/prisma.ts` exists, this page becomes: get the signed-in
- * user's id (`@/lib/supabase/server`), `prisma.bracket.findMany({ where: {
- * creatorId }, orderBy: { createdAt: "desc" }, include: { rounds: { select:
- * { roundNumber: true } } } })`, map each row through `toBracketRow`, and
- * render `<BracketList brackets={rows} />`.
+ * `creatorId` scopes the query to the signed-in user's own `Profile.id`
+ * (the Supabase auth user id - see #7's sync trigger), so a visitor only
+ * ever sees their own brackets, never another creator's. `rounds` is
+ * selected (not the full relation) since `toBracketRow`/
+ * `currentRoundNumber` only need each round's `roundNumber`.
  */
-export default function DashboardPage() {
-  return <h1 className="text-2xl font-semibold">Dashboard</h1>;
+export default async function DashboardPage() {
+  const supabase = await createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  // The layout guard (#6) already redirects signed-out visitors before this
+  // ever renders; this is just a type-narrowing guard for the (unreachable
+  // in practice) case, not a second auth check.
+  if (!user) {
+    return null;
+  }
+
+  const brackets = await prisma.bracket.findMany({
+    where: { creatorId: user.id },
+    orderBy: { createdAt: "desc" },
+    include: { rounds: { select: { roundNumber: true } } },
+  });
+
+  // Called directly as a plain function, not as a `<BracketList ... />`
+  // JSX element - this codebase's tests (e.g. `./bracket-list.test.tsx`)
+  // introspect a component's return value via `JSON.stringify`, which
+  // cannot see into an unrendered child element (its `type` is a function
+  // reference, dropped by `JSON.stringify`). Calling it directly resolves
+  // it inline, and is otherwise equivalent for React.
+  return BracketList({ brackets: brackets.map(toBracketRow) });
 }
