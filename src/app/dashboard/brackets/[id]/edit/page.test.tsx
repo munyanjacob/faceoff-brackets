@@ -219,6 +219,65 @@ describe("/dashboard/brackets/[id]/edit page", () => {
     expect(html).toMatch(/round duration can.t be changed/i);
   });
 
+  it("passes the bracket's scheduledStartAt to the scheduled start form while a DRAFT", async () => {
+    const scheduledStartAt = new Date("2030-01-01T09:00:00.000Z");
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "DRAFT",
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+      scheduledStartAt,
+    });
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).toContain(scheduledStartAt.toISOString());
+  });
+
+  it("passes a null scheduledStartAt to the scheduled start form for a bracket with no scheduled start yet", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "DRAFT",
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+      scheduledStartAt: null,
+    });
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).toContain('"scheduledStartAt":null');
+  });
+
+  it("omits the scheduled start form and shows a locked message once the bracket is no longer a DRAFT", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "ACTIVE",
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+      scheduledStartAt: null,
+    });
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).not.toContain("scheduledStartAt");
+    expect(html).toMatch(/start time can.t be changed/i);
+  });
+
   it("404s instead of leaking a bracket that doesn't belong to the signed-in creator", async () => {
     bracketFindFirst.mockResolvedValue(null);
 

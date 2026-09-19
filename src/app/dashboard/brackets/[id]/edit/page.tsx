@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { AddItemForm } from "./add-item-form";
 import { ItemRow } from "./item-row";
 import { RoundDurationForm } from "./round-duration-form";
+import { ScheduledStartForm } from "./scheduled-start-form";
 import {
   computeTotalRounds,
   parseStoredRoundDurationOverrides,
@@ -11,9 +12,10 @@ import {
 
 /**
  * `/dashboard/brackets/[id]/edit` - a draft bracket's item list (issue
- * #11) plus its round-duration configuration (issue #13), replacing the
- * #10 placeholder that used to live here. #12/#14 still build the rest of
- * the editor (image upload, start time) on this same route.
+ * #11), its round-duration configuration (issue #13), and its immediate-
+ * vs-scheduled start time (issue #14), replacing the #10 placeholder that
+ * used to live here. #12 still builds the rest of the editor (image
+ * upload) on this same route.
  *
  * Still does a real ownership-scoped lookup (rather than trusting the URL's
  * `id` outright) per the Next.js Server Actions/Server Components security
@@ -70,7 +72,7 @@ export default async function EditBracketPage({
       <h1 className="text-xl font-semibold">
         Editing &quot;{bracket.title}&quot;
       </h1>
-      <p>#12/#14 build the rest of the real editor (image upload, start time) here.</p>
+      <p>#12 builds the rest of the real editor (image upload) here.</p>
 
       {isDraft ? (
         <RoundDurationForm
@@ -83,6 +85,18 @@ export default async function EditBracketPage({
         <p>
           This bracket is no longer a draft, so its round duration can&apos;t
           be changed.
+        </p>
+      )}
+
+      {isDraft ? (
+        <ScheduledStartForm
+          bracketId={bracket.id}
+          scheduledStartAt={bracket.scheduledStartAt}
+        />
+      ) : (
+        <p>
+          This bracket is no longer a draft, so its start time can&apos;t be
+          changed.
         </p>
       )}
 
