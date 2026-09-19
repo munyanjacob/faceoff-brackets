@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
@@ -44,34 +45,49 @@ import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 // connecting with the same credentials `prisma migrate` itself uses
 // (`DIRECT_URL`) reads `profiles` directly instead, without touching any
 // production grant.
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-const hasLiveCredentials = Boolean(url && anonKey && serviceRoleKey);
-
-// `vitest.config.ts` loads `.env.local` via Vite's `loadEnv`, which runs
-// shell-style `$VAR` interpolation over every value (dotenv-expand
-// semantics). This project's real `DIRECT_URL` password contains `$`
-// sequences that happen to look like variable references (e.g. `$Q...`),
-// so Vite's copy of `process.env.DIRECT_URL` silently mangles the password
-// and any real connection with it fails Postgres auth - confirmed by hand.
-// `prisma7.config.ts` sidesteps this entirely by using Node's own
-// `process.loadEnvFile`, which does plain literal assignment with no
-// interpolation. `process.loadEnvFile` never overwrites a key that's
-// already set, so deleting Vite's (wrong) value first forces a fresh,
-// correctly-parsed read straight from the file, matching exactly what
-// `prisma migrate`/`prisma db execute` themselves connect with.
-function readDirectUrlFromEnvFile(): string | undefined {
-  delete process.env.DIRECT_URL;
+// vitest.config.ts (issue #38) only injects NEXT_PUBLIC_SUPABASE_URL and
+// NEXT_PUBLIC_SUPABASE_ANON_KEY into every test's process.env now, not the
+// rest of .env.local. This suite needs two more values that only it uses -
+// SUPABASE_SERVICE_ROLE_KEY for the admin client below, and DIRECT_URL for
+// the raw `pg` client - so read them straight out of the file instead of
+// relying on global injection.
+//
+// This is a plain literal read (a regex capture over the file's contents),
+// not Vite's `loadEnv` and not `process.loadEnvFile` either. Both matter,
+// for different reasons:
+//   - `loadEnv` runs shell-style `$VAR` interpolation over every value
+//     (dotenv-expand semantics), and this project's real `DIRECT_URL`
+//     password contains `$` sequences that happen to look like variable
+//     references (e.g. `$Q...`), so Vite's copy silently mangled the
+//     password and any real connection with it failed Postgres auth -
+//     confirmed by hand. `prisma7.config.ts` sidesteps this with Node's own
+//     `process.loadEnvFile`, which does plain literal assignment with no
+//     interpolation, matching exactly what `prisma migrate`/`prisma db
+//     execute` themselves connect with.
+//   - `process.loadEnvFile` reads the *whole* file into `process.env`
+//     (skipping only keys already set), so using it here would pull
+//     CRON_SECRET and DATABASE_URL into process.env as a side effect even
+//     though this suite never uses them - exactly the blanket-injection
+//     issue #38 set out to stop, just relocated to this file. A targeted
+//     regex avoids that: only the one named key is ever read.
+function readEnvVarFromLocalFile(name: string): string | undefined {
+  let contents: string;
   try {
-    process.loadEnvFile(".env.local");
+    contents = readFileSync(".env.local", "utf8");
   } catch {
     // .env.local is gitignored and may not exist (e.g. CI) - fall through
-    // with DIRECT_URL left unset, same as prisma7.config.ts.
+    // with the var left unset, same as process.loadEnvFile would.
+    return undefined;
   }
-  return process.env.DIRECT_URL;
+  const match = contents.match(new RegExp(`^${name}=(.*)$`, "m"));
+  return match?.[1]?.trim();
 }
+
+const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const serviceRoleKey = readEnvVarFromLocalFile("SUPABASE_SERVICE_ROLE_KEY");
+
+const hasLiveCredentials = Boolean(url && anonKey && serviceRoleKey);
 
 type ProfileRow = { id: string; email: string; display_name: string | null };
 
@@ -127,7 +143,7 @@ describe.runIf(hasLiveCredentials && pgAvailable)(
     beforeAll(async () => {
       const { Client } = pgModule;
       pg = new Client({
-        connectionString: readDirectUrlFromEnvFile(),
+        connectionString: readEnvVarFromLocalFile("DIRECT_URL"),
         ssl: { rejectUnauthorized: false },
       });
       await pg.connect();

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 
@@ -40,9 +41,29 @@ vi.mock("next/headers", () => ({
 const { createClient } = await import("@/lib/supabase/server");
 const { logout } = await import("./actions");
 
+// vitest.config.ts (issue #38) only injects NEXT_PUBLIC_SUPABASE_URL and
+// NEXT_PUBLIC_SUPABASE_ANON_KEY into every test's process.env now, not the
+// rest of .env.local. This suite additionally needs the service-role key
+// for its admin client, so read that one value directly out of the file -
+// a plain literal read (not Vite's `loadEnv`, and not `process.loadEnvFile`
+// either, since that would pull every other key in .env.local into
+// process.env as a side effect, which is exactly what issue #38 set out to
+// stop).
+function readServiceRoleKeyFromEnvFile(): string | undefined {
+  let contents: string;
+  try {
+    contents = readFileSync(".env.local", "utf8");
+  } catch {
+    // .env.local is gitignored and may not exist (e.g. CI) - fall through
+    // with the var left unset.
+    return undefined;
+  }
+  return contents.match(/^SUPABASE_SERVICE_ROLE_KEY=(.*)$/m)?.[1]?.trim();
+}
+
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const serviceRoleKey = readServiceRoleKeyFromEnvFile();
 
 const hasLiveCredentials = Boolean(url && anonKey && serviceRoleKey);
 
