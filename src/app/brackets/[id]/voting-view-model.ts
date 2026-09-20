@@ -74,6 +74,22 @@ export type VotingRound = {
 
 export type VotingBracket = {
   status: string; // Bracket status
+  /**
+   * Issue #28: when set on a `SCHEDULED` bracket, lets the not-started
+   * message below state *when* voting opens instead of just that it hasn't
+   * yet - `Bracket.scheduledStartAt` from `prisma/schema.prisma`, passed
+   * straight through from `./page.tsx`'s/`./matchups/[matchupId]/page.tsx`'s
+   * unfiltered `prisma.bracket.findUnique` result (no `select` there, so
+   * every scalar column, including this one, is already present - no query
+   * change was needed for this).
+   *
+   * Optional (rather than required) so every existing test/call site that
+   * only cares about `status` (and every `DRAFT` bracket, which never has a
+   * committed `scheduledStartAt` worth announcing - see
+   * `notStartedMessage` below) doesn't have to thread a value through it
+   * doesn't use.
+   */
+  scheduledStartAt?: Date | null;
 };
 
 export type VotingState =
@@ -82,6 +98,50 @@ export type VotingState =
 
 export const NOT_STARTED_MESSAGE =
   "This bracket hasn't started voting yet. Check back once it opens.";
+
+/**
+ * Human-readable rendering of a scheduled start time for the not-started
+ * message below. No timezone is pinned (same convention as
+ * `../../dashboard/bracket-view-model.ts`'s `formatCreatedAt` and
+ * `../../discover/discovery-view-model.ts`'s equivalent) - it renders in
+ * whichever timezone the process (server-rendering this page) is running
+ * in, consistent with how this codebase already formats every other date it
+ * shows a voter.
+ */
+export function formatScheduledStartAt(date: Date): string {
+  return new Intl.DateTimeFormat("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}
+
+/**
+ * Issue #28's not-started message: a generic "hasn't started" for a `DRAFT`
+ * bracket (which has nothing committed to announce - a creator can still
+ * change or clear `scheduledStartAt` before publishing), or - for a
+ * `SCHEDULED` bracket with a `scheduledStartAt` - a message stating exactly
+ * when voting opens, so a voter arriving early isn't just told "not yet"
+ * with no indication of when to come back.
+ *
+ * Falls back to the generic `NOT_STARTED_MESSAGE` for a `SCHEDULED` bracket
+ * with no `scheduledStartAt` too (shouldn't happen in practice - see
+ * `findDueScheduledBrackets`'s doc comment on why a `SCHEDULED` bracket
+ * always has one - but this keeps the message rendering defensive rather
+ * than crashing or printing "Invalid Date" if that invariant is ever
+ * violated).
+ */
+function notStartedMessage(bracket: VotingBracket): string {
+  if (bracket.status === "SCHEDULED" && bracket.scheduledStartAt) {
+    return `This bracket hasn't started yet. It's scheduled to begin at ${formatScheduledStartAt(
+      bracket.scheduledStartAt
+    )}.`;
+  }
+  return NOT_STARTED_MESSAGE;
+}
 
 export const COMPLETED_MESSAGE =
   "This bracket has finished. Voting is closed.";
@@ -181,7 +241,7 @@ function findActiveRoundOrMessage(
   | { kind: "no-active-matchup"; message: string }
   | { kind: "round"; round: VotingRound } {
   if (bracket.status === "DRAFT" || bracket.status === "SCHEDULED") {
-    return { kind: "no-active-matchup", message: NOT_STARTED_MESSAGE };
+    return { kind: "no-active-matchup", message: notStartedMessage(bracket) };
   }
 
   if (bracket.status === "COMPLETED") {

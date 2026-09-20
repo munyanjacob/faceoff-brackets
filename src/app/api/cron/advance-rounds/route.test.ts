@@ -15,6 +15,8 @@ const findExpiredRounds = vi.fn();
 const evaluateRound = vi.fn();
 const findExpiredTieBreakers = vi.fn();
 const resolveTieBreaker = vi.fn();
+const findDueScheduledBrackets = vi.fn();
+const startScheduledBracket = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/rounds/find-expired-rounds", () => ({ findExpiredRounds }));
@@ -23,6 +25,10 @@ vi.mock("@/lib/rounds/find-expired-tie-breakers", () => ({
   findExpiredTieBreakers,
 }));
 vi.mock("@/lib/rounds/resolve-tie-breaker", () => ({ resolveTieBreaker }));
+vi.mock("@/lib/rounds/find-due-scheduled-brackets", () => ({
+  findDueScheduledBrackets,
+}));
+vi.mock("@/lib/rounds/start-scheduled-bracket", () => ({ startScheduledBracket }));
 
 const { GET } = await import("./route");
 
@@ -43,6 +49,8 @@ describe("GET /api/cron/advance-rounds", () => {
     evaluateRound.mockReset().mockResolvedValue(undefined);
     findExpiredTieBreakers.mockReset().mockResolvedValue([]);
     resolveTieBreaker.mockReset().mockResolvedValue(undefined);
+    findDueScheduledBrackets.mockReset().mockResolvedValue([]);
+    startScheduledBracket.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -91,24 +99,28 @@ describe("GET /api/cron/advance-rounds", () => {
     expect(response.status).toBe(401);
   });
 
-  it("does not look up expired rounds or tie-breakers when unauthorized", async () => {
+  it("does not look up expired rounds, tie-breakers, or due scheduled brackets when unauthorized", async () => {
     await GET(requestWithAuth());
 
     expect(findExpiredRounds).not.toHaveBeenCalled();
     expect(evaluateRound).not.toHaveBeenCalled();
     expect(findExpiredTieBreakers).not.toHaveBeenCalled();
     expect(resolveTieBreaker).not.toHaveBeenCalled();
+    expect(findDueScheduledBrackets).not.toHaveBeenCalled();
+    expect(startScheduledBracket).not.toHaveBeenCalled();
   });
 
-  it("is a safe no-op (still 200) when nothing has expired in either step", async () => {
+  it("is a safe no-op (still 200) when nothing has expired/is due in any step", async () => {
     findExpiredRounds.mockResolvedValue([]);
     findExpiredTieBreakers.mockResolvedValue([]);
+    findDueScheduledBrackets.mockResolvedValue([]);
 
     const response = await GET(requestWithAuth("Bearer test-cron-secret"));
 
     expect(response.status).toBe(200);
     expect(evaluateRound).not.toHaveBeenCalled();
     expect(resolveTieBreaker).not.toHaveBeenCalled();
+    expect(startScheduledBracket).not.toHaveBeenCalled();
   });
 
   it("calls evaluateRound once per expired round returned by findExpiredRounds", async () => {
@@ -205,9 +217,63 @@ describe("GET /api/cron/advance-rounds", () => {
     consoleError.mockRestore();
   });
 
-  it("reports counts for both steps in the JSON response", async () => {
+  it("calls startScheduledBracket once per due bracket returned by findDueScheduledBrackets", async () => {
+    findDueScheduledBrackets.mockResolvedValue([
+      { id: "bracket-1" },
+      { id: "bracket-2" },
+    ]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(startScheduledBracket).toHaveBeenCalledTimes(2);
+    expect(startScheduledBracket).toHaveBeenNthCalledWith(1, "bracket-1");
+    expect(startScheduledBracket).toHaveBeenNthCalledWith(2, "bracket-2");
+  });
+
+  it("runs step 3 (scheduled brackets) even when steps 1 and 2 found nothing", async () => {
+    findExpiredRounds.mockResolvedValue([]);
+    findExpiredTieBreakers.mockResolvedValue([]);
+    findDueScheduledBrackets.mockResolvedValue([{ id: "bracket-1" }]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).not.toHaveBeenCalled();
+    expect(resolveTieBreaker).not.toHaveBeenCalled();
+    expect(startScheduledBracket).toHaveBeenCalledTimes(1);
+    expect(startScheduledBracket).toHaveBeenCalledWith("bracket-1");
+  });
+
+  it("logs and continues when one bracket's startScheduledBracket rejects, still starting the rest and returning 200", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    findDueScheduledBrackets.mockResolvedValue([
+      { id: "bad-bracket" },
+      { id: "good-bracket" },
+    ]);
+    startScheduledBracket.mockImplementation(async (bracketId: string) => {
+      if (bracketId === "bad-bracket") {
+        throw new Error("boom");
+      }
+    });
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(startScheduledBracket).toHaveBeenCalledTimes(2);
+    expect(startScheduledBracket).toHaveBeenCalledWith("bad-bracket");
+    expect(startScheduledBracket).toHaveBeenCalledWith("good-bracket");
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+
+  it("reports counts for all three steps in the JSON response", async () => {
     findExpiredRounds.mockResolvedValue([{ id: "round-1" }]);
     findExpiredTieBreakers.mockResolvedValue([{ id: "matchup-1" }]);
+    findDueScheduledBrackets.mockResolvedValue([{ id: "bracket-1" }]);
 
     const response = await GET(requestWithAuth("Bearer test-cron-secret"));
     const body = await response.json();
@@ -220,6 +286,9 @@ describe("GET /api/cron/advance-rounds", () => {
       expiredTieBreakers: 1,
       tieBreakersResolved: 1,
       tieBreakersFailed: 0,
+      dueScheduledBrackets: 1,
+      bracketsStarted: 1,
+      bracketsStartFailed: 0,
     });
   });
 });

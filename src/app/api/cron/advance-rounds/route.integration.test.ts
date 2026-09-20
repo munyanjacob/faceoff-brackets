@@ -186,6 +186,64 @@ describe.runIf(hasLiveDatabase)(
       });
     }
 
+    // Issue #28: seeds a SCHEDULED bracket whose scheduledStartAt is already
+    // in the past, with round 1 already created PENDING (mirroring what
+    // #18's buildRoundOnePlan persists at publish time for a scheduled
+    // start) - a non-bye Matchup PENDING, and (when `withBye` is set) a bye
+    // Matchup already COMPLETED with its winner set, exactly as
+    // buildRoundOnePlan always produces a bye regardless of immediate vs.
+    // scheduled start.
+    async function makeDueScheduledBracket(
+      itemCount: number,
+      options: { durationMinutes?: number } = {}
+    ) {
+      const durationMinutes = options.durationMinutes ?? 60;
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - scheduled start",
+        itemCount
+      );
+      await prisma.bracket.update({
+        where: { id: bracket.id },
+        data: {
+          status: "SCHEDULED",
+          scheduledStartAt: new Date(Date.now() - 60_000), // already due
+        },
+      });
+
+      const matchupsData = [];
+      for (let i = 0; i + 1 < items.length; i += 2) {
+        matchupsData.push({
+          itemAId: items[i].id,
+          itemBId: items[i + 1].id,
+          status: "PENDING" as const,
+        });
+      }
+      if (items.length % 2 === 1) {
+        const lastItem = items[items.length - 1];
+        matchupsData.push({
+          itemAId: lastItem.id,
+          itemBId: null,
+          winnerItemId: lastItem.id,
+          status: "COMPLETED" as const,
+        });
+      }
+
+      const round = await prisma.round.create({
+        data: {
+          bracketId: bracket.id,
+          roundNumber: 1,
+          durationMinutes,
+          status: "PENDING",
+          startsAt: null,
+          endsAt: null,
+          matchups: { create: matchupsData },
+        },
+        include: { matchups: true },
+      });
+
+      return { bracket, items, round };
+    }
+
     it("returns 200 and touches nothing when no round has expired", async () => {
       const { bracket, items } = await makeBracket(
         "Advance Rounds Route E2E - nothing expired",
@@ -430,6 +488,119 @@ describe.runIf(hasLiveDatabase)(
         where: { id: round.id },
       });
       expect(untouchedRound?.status).toBe("ACTIVE");
+    });
+
+    it("starts a due SCHEDULED bracket: Bracket/Round go ACTIVE, non-bye Matchups go ACTIVE, and startsAt/endsAt are set from the transition time", async () => {
+      const before = new Date();
+      const { bracket, round } = await makeDueScheduledBracket(4, {
+        durationMinutes: 90,
+      });
+
+      const response = await GET(authedRequest());
+      const after = new Date();
+      expect(response.status).toBe(200);
+
+      const startedBracket = await prisma.bracket.findUnique({
+        where: { id: bracket.id },
+      });
+      expect(startedBracket?.status).toBe("ACTIVE");
+
+      const startedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(startedRound?.status).toBe("ACTIVE");
+      expect(startedRound?.startsAt).not.toBeNull();
+      expect(startedRound!.startsAt!.getTime()).toBeGreaterThanOrEqual(
+        before.getTime()
+      );
+      expect(startedRound!.startsAt!.getTime()).toBeLessThanOrEqual(
+        after.getTime()
+      );
+      expect(startedRound!.endsAt!.getTime()).toBe(
+        startedRound!.startsAt!.getTime() + 90 * 60_000
+      );
+
+      const matchups = await prisma.matchup.findMany({
+        where: { roundId: round.id },
+      });
+      expect(matchups.every((m) => m.status === "ACTIVE")).toBe(true);
+    });
+
+    it("leaves an already-COMPLETED bye Matchup untouched when starting a due SCHEDULED bracket", async () => {
+      const { round } = await makeDueScheduledBracket(3); // odd count -> one bye
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const matchups = await prisma.matchup.findMany({
+        where: { roundId: round.id },
+        orderBy: { itemA: { createdAt: "asc" } },
+      });
+      const bye = matchups.find((m) => m.itemBId === null);
+      const nonBye = matchups.filter((m) => m.itemBId !== null);
+
+      expect(bye?.status).toBe("COMPLETED");
+      expect(bye?.winnerItemId).not.toBeNull();
+      expect(nonBye.every((m) => m.status === "ACTIVE")).toBe(true);
+    });
+
+    it("does not touch a SCHEDULED bracket whose scheduledStartAt is still in the future", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - not yet due",
+        2
+      );
+      await prisma.bracket.update({
+        where: { id: bracket.id },
+        data: {
+          status: "SCHEDULED",
+          scheduledStartAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      const round = await prisma.round.create({
+        data: {
+          bracketId: bracket.id,
+          roundNumber: 1,
+          durationMinutes: 60,
+          status: "PENDING",
+          matchups: {
+            create: [{ itemAId: items[0].id, itemBId: items[1].id, status: "PENDING" }],
+          },
+        },
+      });
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const unchangedBracket = await prisma.bracket.findUnique({
+        where: { id: bracket.id },
+      });
+      expect(unchangedBracket?.status).toBe("SCHEDULED");
+
+      const unchangedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(unchangedRound?.status).toBe("PENDING");
+    });
+
+    it("does not start a SCHEDULED bracket when unauthorized", async () => {
+      const { bracket, round } = await makeDueScheduledBracket(2);
+
+      const response = await GET(
+        new Request("http://localhost/api/cron/advance-rounds", {
+          headers: { authorization: "Bearer wrong-secret" },
+        })
+      );
+      expect(response.status).toBe(401);
+
+      const untouchedBracket = await prisma.bracket.findUnique({
+        where: { id: bracket.id },
+      });
+      expect(untouchedBracket?.status).toBe("SCHEDULED");
+
+      const untouchedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(untouchedRound?.status).toBe("PENDING");
     });
   }
 );

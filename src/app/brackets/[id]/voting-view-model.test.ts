@@ -7,6 +7,7 @@ import {
   determineMatchupVotingState,
   determineVoterContext,
   determineVotingState,
+  formatScheduledStartAt,
   isVotableMatchupStatus,
   listVotableMatchups,
   type VotingMatchup,
@@ -43,8 +44,33 @@ describe("determineVotingState", () => {
     expect(state).toEqual({ kind: "no-active-matchup", message: NOT_STARTED_MESSAGE });
   });
 
-  it("shows a not-started message for a SCHEDULED bracket", () => {
+  it("shows the generic not-started message for a SCHEDULED bracket with no scheduledStartAt (defensive - shouldn't happen in practice)", () => {
     const state = determineVotingState({ status: "SCHEDULED" }, []);
+    expect(state).toEqual({ kind: "no-active-matchup", message: NOT_STARTED_MESSAGE });
+  });
+
+  it("states the scheduled start time for a SCHEDULED bracket with a scheduledStartAt (#28)", () => {
+    const scheduledStartAt = new Date("2026-03-01T15:00:00.000Z");
+    const state = determineVotingState(
+      { status: "SCHEDULED", scheduledStartAt },
+      []
+    );
+    expect(state).toEqual({
+      kind: "no-active-matchup",
+      message: `This bracket hasn't started yet. It's scheduled to begin at ${formatScheduledStartAt(
+        scheduledStartAt
+      )}.`,
+    });
+    expect(state.kind === "no-active-matchup" && state.message).toContain(
+      "scheduled to begin at"
+    );
+  });
+
+  it("shows the generic not-started message for a DRAFT bracket even when it happens to carry a scheduledStartAt", () => {
+    const state = determineVotingState(
+      { status: "DRAFT", scheduledStartAt: new Date("2026-03-01T15:00:00.000Z") },
+      []
+    );
     expect(state).toEqual({ kind: "no-active-matchup", message: NOT_STARTED_MESSAGE });
   });
 
@@ -112,6 +138,14 @@ describe("determineVotingState", () => {
   });
 });
 
+describe("formatScheduledStartAt", () => {
+  it("renders a Date as a human-readable date and time string", () => {
+    const formatted = formatScheduledStartAt(new Date("2026-03-01T15:00:00.000Z"));
+    expect(formatted).toContain("2026");
+    expect(formatted).toMatch(/March/);
+  });
+});
+
 describe("isVotableMatchupStatus", () => {
   it("treats ACTIVE and TIE_BREAKER as votable", () => {
     expect(isVotableMatchupStatus("ACTIVE")).toBe(true);
@@ -128,6 +162,20 @@ describe("listVotableMatchups", () => {
   it("shows a not-started message for a DRAFT bracket", () => {
     const state = listVotableMatchups({ status: "DRAFT" }, []);
     expect(state).toEqual({ kind: "no-active-matchup", message: NOT_STARTED_MESSAGE });
+  });
+
+  it("states the scheduled start time for a SCHEDULED bracket with a scheduledStartAt (#28)", () => {
+    const scheduledStartAt = new Date("2026-03-01T15:00:00.000Z");
+    const state = listVotableMatchups(
+      { status: "SCHEDULED", scheduledStartAt },
+      []
+    );
+    expect(state).toEqual({
+      kind: "no-active-matchup",
+      message: `This bracket hasn't started yet. It's scheduled to begin at ${formatScheduledStartAt(
+        scheduledStartAt
+      )}.`,
+    });
   });
 
   it("shows a completed message for a COMPLETED bracket", () => {
@@ -180,6 +228,21 @@ describe("determineMatchupVotingState", () => {
   it("shows a not-started message for a DRAFT bracket regardless of matchupId", () => {
     const state = determineMatchupVotingState({ status: "DRAFT" }, [], "matchup-1");
     expect(state).toEqual({ kind: "no-active-matchup", message: NOT_STARTED_MESSAGE });
+  });
+
+  it("states the scheduled start time for a SCHEDULED bracket with a scheduledStartAt (#28)", () => {
+    const scheduledStartAt = new Date("2026-03-01T15:00:00.000Z");
+    const state = determineMatchupVotingState(
+      { status: "SCHEDULED", scheduledStartAt },
+      [],
+      "matchup-1"
+    );
+    expect(state).toEqual({
+      kind: "no-active-matchup",
+      message: `This bracket hasn't started yet. It's scheduled to begin at ${formatScheduledStartAt(
+        scheduledStartAt
+      )}.`,
+    });
   });
 
   it("shows a completed message for a COMPLETED bracket regardless of matchupId", () => {
