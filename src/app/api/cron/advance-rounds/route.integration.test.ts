@@ -1,0 +1,310 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+// Exercises issue #27's wiring end-to-end against the real, disposable
+// Supabase/Postgres project configured in `.env.local`: seeds a real
+// Profile/Bracket/BracketItem/Round/Matchup/Vote graph via `prisma`, calls
+// the real (unmocked) `GET` handler, and asserts on the resulting rows -
+// same live-database pattern as `../../../../lib/rounds/evaluate-round.integration.test.ts`
+// (#20) and `../../../../lib/rounds/find-expired-rounds.integration.test.ts`
+// (#26), which this endpoint composes.
+function fixDatabaseUrlFromEnvFile(): string | undefined {
+  delete process.env.DATABASE_URL;
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // .env.local is gitignored and may not exist (e.g. CI) - fall through
+    // with DATABASE_URL left unset, same as prisma7.config.ts.
+  }
+  return process.env.DATABASE_URL;
+}
+
+const hasLiveDatabase = Boolean(fixDatabaseUrlFromEnvFile());
+
+describe.runIf(hasLiveDatabase)(
+  "GET /api/cron/advance-rounds, against the live database",
+  () => {
+    let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
+    let GET: typeof import("./route").GET;
+
+    const creatorId = randomUUID();
+    const bracketIds: string[] = [];
+    const cronSecret = "route-integration-test-secret";
+    const originalSecret = process.env.CRON_SECRET;
+
+    beforeAll(async () => {
+      process.env.CRON_SECRET = cronSecret;
+      ({ prisma } = await import("@/lib/prisma"));
+      ({ GET } = await import("./route"));
+
+      await prisma.profile.create({
+        data: {
+          id: creatorId,
+          email: `advance-rounds-route-e2e-${Date.now()}-${Math.random()
+            .toString(36)
+            .slice(2)}@example.test`,
+        },
+      });
+    });
+
+    afterAll(async () => {
+      process.env.CRON_SECRET = originalSecret;
+      // Children before parents, per the schema's `onDelete: Restrict` FKs.
+      await prisma.vote.deleteMany({
+        where: { matchup: { round: { bracketId: { in: bracketIds } } } },
+      });
+      await prisma.matchup.deleteMany({
+        where: { round: { bracketId: { in: bracketIds } } },
+      });
+      await prisma.round.deleteMany({
+        where: { bracketId: { in: bracketIds } },
+      });
+      await prisma.bracketItem.deleteMany({
+        where: { bracketId: { in: bracketIds } },
+      });
+      await prisma.bracket.deleteMany({ where: { id: { in: bracketIds } } });
+      await prisma.profile.deleteMany({ where: { id: creatorId } });
+      await prisma.$disconnect();
+    });
+
+    async function makeBracket(title: string, itemCount: number) {
+      const bracket = await prisma.bracket.create({
+        data: {
+          creatorId,
+          title,
+          visibility: "PUBLIC",
+          votingRequirement: "ANONYMOUS_ALLOWED",
+          defaultRoundDurationMinutes: 60,
+          status: "ACTIVE",
+        },
+      });
+      bracketIds.push(bracket.id);
+
+      // Created one at a time, in order, so their `createdAt` values are
+      // strictly ascending - the ordering `evaluateRound` relies on to
+      // reconstruct bracket order.
+      const items = [];
+      for (let i = 0; i < itemCount; i++) {
+        items.push(
+          await prisma.bracketItem.create({
+            data: { bracketId: bracket.id, title: `Item ${i + 1}` },
+          })
+        );
+      }
+      return { bracket, items };
+    }
+
+    async function makeExpiredRound(
+      bracketId: string,
+      roundNumber: number,
+      pairs: Array<{ itemAId: string; itemBId: string }>
+    ) {
+      const now = Date.now();
+      const round = await prisma.round.create({
+        data: {
+          bracketId,
+          roundNumber,
+          durationMinutes: 60,
+          startsAt: new Date(now - 2 * 60 * 60_000),
+          // Already expired: endsAt is in the past.
+          endsAt: new Date(now - 60_000),
+          status: "ACTIVE",
+          matchups: {
+            create: pairs.map((pair) => ({
+              itemAId: pair.itemAId,
+              itemBId: pair.itemBId,
+              status: "ACTIVE",
+            })),
+          },
+        },
+        include: { matchups: true },
+      });
+      return round;
+    }
+
+    async function vote(matchupId: string, itemId: string, count: number) {
+      for (let i = 0; i < count; i++) {
+        await prisma.vote.create({
+          data: {
+            matchupId,
+            itemId,
+            anonymousVoterIdentifier: randomUUID(),
+          },
+        });
+      }
+    }
+
+    function authedRequest() {
+      return new Request("http://localhost/api/cron/advance-rounds", {
+        headers: { authorization: `Bearer ${cronSecret}` },
+      });
+    }
+
+    it("returns 200 and touches nothing when no round has expired", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - nothing expired",
+        2
+      );
+      // Round that has NOT expired yet.
+      const notExpiredRound = await prisma.round.create({
+        data: {
+          bracketId: bracket.id,
+          roundNumber: 1,
+          durationMinutes: 60,
+          startsAt: new Date(),
+          endsAt: new Date(Date.now() + 60 * 60_000),
+          status: "ACTIVE",
+          matchups: {
+            create: [{ itemAId: items[0].id, itemBId: items[1].id, status: "ACTIVE" }],
+          },
+        },
+      });
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const unchanged = await prisma.round.findUnique({
+        where: { id: notExpiredRound.id },
+      });
+      expect(unchanged?.status).toBe("ACTIVE");
+    });
+
+    it("closes an expired round with clear results, sets winnerItemId, and opens the next round ACTIVE", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - clear results",
+        4
+      );
+      const round = await makeExpiredRound(bracket.id, 1, [
+        { itemAId: items[0].id, itemBId: items[1].id },
+        { itemAId: items[2].id, itemBId: items[3].id },
+      ]);
+      const [m1, m2] = round.matchups;
+      await vote(m1.id, items[0].id, 3);
+      await vote(m1.id, items[1].id, 1);
+      await vote(m2.id, items[2].id, 1);
+      await vote(m2.id, items[3].id, 5);
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const closedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(closedRound?.status).toBe("COMPLETED");
+
+      const decidedMatchups = await prisma.matchup.findMany({
+        where: { roundId: round.id },
+        orderBy: { itemA: { createdAt: "asc" } },
+      });
+      expect(decidedMatchups.every((m) => m.status === "COMPLETED")).toBe(true);
+      expect(decidedMatchups[0].winnerItemId).toBe(items[0].id);
+      expect(decidedMatchups[1].winnerItemId).toBe(items[3].id);
+
+      const nextRound = await prisma.round.findFirst({
+        where: { bracketId: bracket.id, roundNumber: 2 },
+        include: { matchups: true },
+      });
+      expect(nextRound).not.toBeNull();
+      expect(nextRound!.status).toBe("ACTIVE");
+      expect(nextRound!.matchups).toHaveLength(1);
+      expect(nextRound!.matchups[0].itemAId).toBe(items[0].id);
+      expect(nextRound!.matchups[0].itemBId).toBe(items[3].id);
+    });
+
+    it("leaves a tied matchup TIE_BREAKER and keeps the round ACTIVE rather than closing it", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - tie",
+        2
+      );
+      const round = await makeExpiredRound(bracket.id, 1, [
+        { itemAId: items[0].id, itemBId: items[1].id },
+      ]);
+      const [m1] = round.matchups;
+      await vote(m1.id, items[0].id, 2);
+      await vote(m1.id, items[1].id, 2); // tie
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const stillOpenRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(stillOpenRound?.status).toBe("ACTIVE");
+
+      const tieBreakerMatchup = await prisma.matchup.findUnique({
+        where: { id: m1.id },
+      });
+      expect(tieBreakerMatchup?.status).toBe("TIE_BREAKER");
+      expect(tieBreakerMatchup?.winnerItemId).toBeNull();
+
+      const nextRound = await prisma.round.findFirst({
+        where: { bracketId: bracket.id, roundNumber: 2 },
+      });
+      expect(nextRound).toBeNull();
+    });
+
+    it("handles multiple expired rounds across different brackets in a single invocation", async () => {
+      const { bracket: bracketA, items: itemsA } = await makeBracket(
+        "Advance Rounds Route E2E - multi A",
+        2
+      );
+      const { bracket: bracketB, items: itemsB } = await makeBracket(
+        "Advance Rounds Route E2E - multi B",
+        2
+      );
+      const roundA = await makeExpiredRound(bracketA.id, 1, [
+        { itemAId: itemsA[0].id, itemBId: itemsA[1].id },
+      ]);
+      const roundB = await makeExpiredRound(bracketB.id, 1, [
+        { itemAId: itemsB[0].id, itemBId: itemsB[1].id },
+      ]);
+      await vote(roundA.matchups[0].id, itemsA[0].id, 5);
+      await vote(roundB.matchups[0].id, itemsB[1].id, 5);
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const closedA = await prisma.round.findUnique({ where: { id: roundA.id } });
+      const closedB = await prisma.round.findUnique({ where: { id: roundB.id } });
+      expect(closedA?.status).toBe("COMPLETED");
+      expect(closedB?.status).toBe("COMPLETED");
+    });
+
+    it("returns 401 and evaluates nothing when the bearer token is wrong", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - unauthorized",
+        2
+      );
+      const round = await makeExpiredRound(bracket.id, 1, [
+        { itemAId: items[0].id, itemBId: items[1].id },
+      ]);
+      await vote(round.matchups[0].id, items[0].id, 3);
+
+      const response = await GET(
+        new Request("http://localhost/api/cron/advance-rounds", {
+          headers: { authorization: "Bearer wrong-secret" },
+        })
+      );
+      expect(response.status).toBe(401);
+
+      const untouchedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(untouchedRound?.status).toBe("ACTIVE");
+    });
+  }
+);
+
+if (!hasLiveDatabase) {
+  // No live database configured (e.g. CI, or a fresh checkout with no
+  // `.env.local`) - explain the skip instead of silently doing nothing, the
+  // same reasoning as the skip note in
+  // `../../../../lib/rounds/evaluate-round.integration.test.ts`.
+  describe("GET /api/cron/advance-rounds, against the live database", () => {
+    console.warn(
+      "[advance-rounds route.integration.test] Skipping: no live DATABASE_URL is configured in .env.local."
+    );
+
+    it.skip("requires a live DATABASE_URL in .env.local to run this suite locally", () => {});
+  });
+}
