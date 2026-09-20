@@ -212,6 +212,144 @@ describe("castVote", () => {
     expect(voteCreate).toHaveBeenCalled();
   });
 
+  describe("vote phase scoping (issue #41)", () => {
+    it("derives phase ORIGINAL for a plain ACTIVE matchup, scoping the proactive lookup and the insert by it", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+      expect(voteFindFirst).toHaveBeenCalledWith({
+        where: { matchupId: "matchup-1", phase: "ORIGINAL", userId: "profile-1" },
+      });
+      expect(voteCreate).toHaveBeenCalledWith({
+        data: {
+          matchupId: "matchup-1",
+          itemId: "item-a",
+          userId: "profile-1",
+          anonymousVoterIdentifier: null,
+          comment: null,
+          phase: "ORIGINAL",
+        },
+      });
+    });
+
+    it("derives phase TIE_BREAKER for a TIE_BREAKER matchup, scoping the proactive lookup and the insert by it", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup({ status: "TIE_BREAKER" }));
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteCreate.mockResolvedValue({ id: "vote-2", itemId: "item-a" });
+
+      await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+      expect(voteFindFirst).toHaveBeenCalledWith({
+        where: { matchupId: "matchup-1", phase: "TIE_BREAKER", userId: "profile-1" },
+      });
+      expect(voteCreate).toHaveBeenCalledWith({
+        data: {
+          matchupId: "matchup-1",
+          itemId: "item-a",
+          userId: "profile-1",
+          anonymousVoterIdentifier: null,
+          comment: null,
+          phase: "TIE_BREAKER",
+        },
+      });
+    });
+
+    it("a voter who already voted in the original round successfully inserts a new vote once the matchup is TIE_BREAKER (the proactive lookup only ever asks about the TIE_BREAKER phase, so a stale ORIGINAL-phase choice is never returned)", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup({ status: "TIE_BREAKER" }));
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      // No TIE_BREAKER-phase vote yet for this voter - simulates a real
+      // phase-scoped query finding nothing, even though this voter has an
+      // ORIGINAL-phase Vote row from earlier in the round.
+      voteFindFirst.mockResolvedValue(null);
+      voteCreate.mockResolvedValue({ id: "vote-2", itemId: "item-b" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-b",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-b" });
+      expect(voteCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ phase: "TIE_BREAKER" }),
+        })
+      );
+    });
+
+    it("a voter who already cast a TIE_BREAKER-phase vote still gets the existing-choice short-circuit on a repeat attempt in that same phase", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup({ status: "TIE_BREAKER" }));
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteFindFirst.mockResolvedValue({ id: "vote-tb", itemId: "item-a" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-b",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-a" });
+      expect(voteCreate).not.toHaveBeenCalled();
+    });
+
+    it("scopes the P2002 race-recovery lookup by phase too", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup({ status: "TIE_BREAKER" }));
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteFindFirst
+        .mockResolvedValueOnce(null) // proactive check: nothing yet
+        .mockResolvedValueOnce({ id: "vote-race-winner", itemId: "item-b" }); // after the race
+      voteCreate.mockRejectedValue(
+        new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+          code: "P2002",
+          clientVersion: "test",
+        })
+      );
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-b" });
+      expect(voteFindFirst).toHaveBeenNthCalledWith(2, {
+        where: { matchupId: "matchup-1", phase: "TIE_BREAKER", userId: "profile-1" },
+      });
+    });
+
+    it("behaves identically for an anonymous voter - phase is orthogonal to how the voter is identified", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup({ status: "TIE_BREAKER" }));
+      cookieGet.mockReturnValue({ value: signAnonymousVoterId("anon-voter-1") });
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+      expect(voteFindFirst).toHaveBeenCalledWith({
+        where: {
+          matchupId: "matchup-1",
+          phase: "TIE_BREAKER",
+          anonymousVoterIdentifier: "anon-voter-1",
+        },
+      });
+      expect(voteCreate).toHaveBeenCalledWith({
+        data: {
+          matchupId: "matchup-1",
+          itemId: "item-a",
+          userId: null,
+          anonymousVoterIdentifier: "anon-voter-1",
+          comment: null,
+          phase: "TIE_BREAKER",
+        },
+      });
+    });
+  });
+
   it("blocks an ACCOUNT_REQUIRED bracket for a signed-out visitor with a sign-in message, and never touches the cookie or Vote", async () => {
     matchupFindUnique.mockResolvedValue(
       activeMatchup({
@@ -256,6 +394,7 @@ describe("castVote", () => {
         userId: "profile-1",
         anonymousVoterIdentifier: null,
         comment: null,
+        phase: "ORIGINAL",
       },
     });
     expect(cookieSet).not.toHaveBeenCalled();
@@ -309,6 +448,7 @@ describe("castVote", () => {
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
         comment: null,
+        phase: "ORIGINAL",
       },
     });
   });
@@ -328,6 +468,7 @@ describe("castVote", () => {
         userId: null,
         anonymousVoterIdentifier: "existing-anon-id",
         comment: null,
+        phase: "ORIGINAL",
       },
     });
   });
@@ -356,6 +497,7 @@ describe("castVote", () => {
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
         comment: null,
+        phase: "ORIGINAL",
       },
     });
   });
@@ -374,6 +516,7 @@ describe("castVote", () => {
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
         comment: null,
+        phase: "ORIGINAL",
       },
     });
   });
@@ -521,6 +664,7 @@ describe("castVote", () => {
           userId: null,
           anonymousVoterIdentifier: "generated-anon-id",
           comment: "Great choice!",
+          phase: "ORIGINAL",
         },
       });
     });

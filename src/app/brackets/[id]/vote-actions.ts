@@ -153,6 +153,20 @@ async function castVoteUnsafe(
     return { error: MATCHUP_NOT_VOTABLE_ERROR, votedItemId: null };
   }
 
+  // Issue #41: which VotePhase this vote belongs to, derived from the
+  // matchup's status at request time - not stored/passed by the caller, so
+  // a stale form submission can't lie about it. isVotableMatchupStatus
+  // above already narrowed matchup.status to "ACTIVE" | "TIE_BREAKER", so
+  // any non-TIE_BREAKER votable status maps to ORIGINAL. This makes a
+  // voter's existing-vote lookup, insert, and P2002 race-recovery lookup
+  // below all scoped per phase: a voter who already voted while the
+  // matchup was ACTIVE gets a fresh, independent vote once it becomes
+  // TIE_BREAKER, without weakening the one-vote-per-identity-per-phase
+  // guarantee within either phase - see prisma/schema.prisma's
+  // @@unique([matchupId, userId, phase]) / @@unique([matchupId,
+  // anonymousVoterIdentifier, phase]).
+  const phase = matchup.status === "TIE_BREAKER" ? "TIE_BREAKER" : "ORIGINAL";
+
   const supabase = await createClient();
   const {
     data: { user },
@@ -197,7 +211,7 @@ async function castVoteUnsafe(
   // identity could both pass this - see the P2002 catch below for the real
   // guard.
   const existingVote = await prisma.vote.findFirst({
-    where: { matchupId, ...voterKey },
+    where: { matchupId, phase, ...voterKey },
   });
   if (existingVote) {
     return { error: null, votedItemId: existingVote.itemId };
@@ -250,6 +264,7 @@ async function castVoteUnsafe(
             ? voterKey.anonymousVoterIdentifier
             : null,
         comment,
+        phase,
       },
     });
 
@@ -268,7 +283,7 @@ async function castVoteUnsafe(
       err.code === "P2002"
     ) {
       const existingAfterRace = await prisma.vote.findFirst({
-        where: { matchupId, ...voterKey },
+        where: { matchupId, phase, ...voterKey },
       });
       revalidatePath(`/brackets/${matchup.round.bracketId}`);
       revalidatePath(`/brackets/${matchup.round.bracketId}/matchups/${matchupId}`);
