@@ -232,7 +232,34 @@ describe("castVote", () => {
     });
     expect(cookieSet).not.toHaveBeenCalled();
     expect(result).toEqual({ error: null, votedItemId: "item-a" });
+    // Issue #40: both the bracket-level route and this matchup's own
+    // per-matchup route get revalidated, since either one might currently
+    // be showing this vote's result.
     expect(revalidatePath).toHaveBeenCalledWith("/brackets/bracket-1");
+    expect(revalidatePath).toHaveBeenCalledWith(
+      "/brackets/bracket-1/matchups/matchup-1"
+    );
+  });
+
+  it("revalidates both routes on the P2002-race recovery path too", async () => {
+    matchupFindUnique.mockResolvedValue(activeMatchup());
+    getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+    voteFindFirst
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "vote-race-winner", itemId: "item-b" });
+    voteCreate.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+        code: "P2002",
+        clientVersion: "test",
+      })
+    );
+
+    await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+    expect(revalidatePath).toHaveBeenCalledWith("/brackets/bracket-1");
+    expect(revalidatePath).toHaveBeenCalledWith(
+      "/brackets/bracket-1/matchups/matchup-1"
+    );
   });
 
   it("mints and sets a new anonymous cookie identifier when ANONYMOUS_ALLOWED and no cookie exists yet, and uses it as Vote.anonymousVoterIdentifier", async () => {
