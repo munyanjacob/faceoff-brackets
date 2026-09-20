@@ -30,7 +30,6 @@ type MatchupFixture = {
   winnerItemId: string | null;
   status: "PENDING" | "ACTIVE" | "TIE_BREAKER" | "COMPLETED";
   tieBreakerEndsAt: Date | null;
-  round: { durationMinutes: number };
 };
 
 function makeMatchup(opts: Partial<MatchupFixture> = {}): MatchupFixture {
@@ -42,29 +41,21 @@ function makeMatchup(opts: Partial<MatchupFixture> = {}): MatchupFixture {
     winnerItemId: null,
     status: "TIE_BREAKER",
     tieBreakerEndsAt: new Date("2026-01-01T01:00:00.000Z"),
-    round: { durationMinutes: 60 },
     ...opts,
   };
 }
 
-// `voteCount` is looked up by (itemId, createdAt.gte) pair via a simple
-// table, mirroring how resolveTieBreaker shapes its `prisma.vote.count`
-// calls. Any call whose `createdAt.gte` doesn't match the expected
-// tie-breaker-start cutoff falls through to 0, so a test can catch a wrong
-// cutoff by seeding votes only "before" it and asserting the tally is 0.
-function mockVotes(
-  table: Record<string, number>,
-  expectedGte: Date
-) {
+// Issue #41: `voteCount` is looked up by (itemId, phase) pair, mirroring how
+// resolveTieBreaker now shapes its `prisma.vote.count` calls - only a
+// TIE_BREAKER-phase call for a given item returns its seeded tally; any
+// other phase (or a call that's missing the phase filter entirely, where
+// `where.phase` would be `undefined`) falls through to 0. This is what lets
+// a test catch a missing/wrong phase filter by seeding votes and asserting
+// the tally isn't 0.
+function mockVotes(table: Record<string, number>) {
   voteCount.mockImplementation(
-    async ({
-      where,
-    }: {
-      where: { itemId: string; createdAt: { gte: Date } };
-    }) => {
-      if (where.createdAt.gte.getTime() !== expectedGte.getTime()) {
-        return 0;
-      }
+    async ({ where }: { where: { itemId: string; phase?: string } }) => {
+      if (where.phase !== "TIE_BREAKER") return 0;
       return table[where.itemId] ?? 0;
     }
   );
@@ -108,22 +99,21 @@ describe("resolveTieBreaker", () => {
     );
   });
 
-  it("a decisive tie-breaker vote: the item with more tie-breaker-window votes wins, status becomes COMPLETED, and evaluateRound is re-run for the Matchup's round", async () => {
+  it("a decisive tie-breaker vote: the item with more TIE_BREAKER-phase votes wins, status becomes COMPLETED, and evaluateRound is re-run for the Matchup's round", async () => {
     const now = new Date("2026-01-01T02:00:00.000Z");
-    // durationMinutes 60 -> tie-breaker window = max(15, 60) = 60 minutes,
-    // so tieBreakerStartedAt = tieBreakerEndsAt - 60 minutes.
-    const tieBreakerEndsAt = new Date("2026-01-01T01:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:00:00.000Z");
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 60 } })
-    );
-    mockVotes({ "item-a": 5, "item-b": 2 }, tieBreakerStartedAt);
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({ "item-a": 5, "item-b": 2 });
 
     await resolveTieBreaker("matchup-1", now);
 
     expect(matchupFindUnique).toHaveBeenCalledWith({
       where: { id: "matchup-1" },
-      include: { round: true },
+    });
+    expect(voteCount).toHaveBeenCalledWith({
+      where: { matchupId: "matchup-1", itemId: "item-a", phase: "TIE_BREAKER" },
+    });
+    expect(voteCount).toHaveBeenCalledWith({
+      where: { matchupId: "matchup-1", itemId: "item-b", phase: "TIE_BREAKER" },
     });
     expect(matchupUpdate).toHaveBeenCalledWith({
       where: { id: "matchup-1" },
@@ -132,53 +122,45 @@ describe("resolveTieBreaker", () => {
     expect(evaluateRound).toHaveBeenCalledWith("round-1", now);
   });
 
-  it("derives the tie-breaker start using the same 25%-of-round-duration/60-minute-floor formula evaluate-round.ts used to set tieBreakerEndsAt", async () => {
-    // durationMinutes 300 -> 25% = 75 minutes, above the 60-minute floor.
-    const tieBreakerEndsAt = new Date("2026-01-01T02:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:45:00.000Z"); // 75 min earlier
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 300 } })
-    );
-    mockVotes({ "item-a": 3, "item-b": 1 }, tieBreakerStartedAt);
+  it("counts only TIE_BREAKER-phase votes for both items - a call missing that filter (or using another phase) never contributes to the tally", async () => {
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({ "item-a": 3, "item-b": 1 });
 
     await resolveTieBreaker("matchup-1");
 
+    for (const call of voteCount.mock.calls) {
+      const [{ where }] = call;
+      expect(where.phase).toBe("TIE_BREAKER");
+      expect(where.matchupId).toBe("matchup-1");
+    }
+    expect(voteCount).toHaveBeenCalledTimes(2);
     expect(matchupUpdate).toHaveBeenCalledWith({
       where: { id: "matchup-1" },
       data: { status: "COMPLETED", winnerItemId: "item-a" },
     });
   });
 
-  it("excludes votes cast before the tie-breaker started from the tally", async () => {
-    const tieBreakerEndsAt = new Date("2026-01-01T01:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:00:00.000Z");
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 60 } })
-    );
-    // Votes only exist "before" the tie-breaker window (createdAt.gte
-    // wouldn't match), so both counts resolve to 0 via mockVotes' fallback -
-    // simulating original-round votes being excluded rather than counted.
-    mockVotes({}, tieBreakerStartedAt);
+  it("issue #41: tallies only the TIE_BREAKER-phase vote even when an ORIGINAL-phase vote (e.g. from a voter who revoted) favored the other item", async () => {
+    // Simulates the real-world shape after #41: a voter's ORIGINAL-phase
+    // vote (favoring item-a, per the plain `Vote` rows a real DB would hold)
+    // stays in the table but is invisible to this tally, which only ever
+    // asks the mock about TIE_BREAKER-phase counts - item-b is the seeded
+    // TIE_BREAKER-phase winner here regardless of what happened in the
+    // original round.
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({ "item-a": 1, "item-b": 4 });
 
     await resolveTieBreaker("matchup-1");
 
-    // Both calls must have used the derived tie-breaker start as their
-    // cutoff - proving pre-tie-breaker votes are filtered out by construction.
-    for (const call of voteCount.mock.calls) {
-      const [{ where }] = call;
-      expect(where.createdAt).toEqual({ gte: tieBreakerStartedAt });
-      expect(where.matchupId).toBe("matchup-1");
-    }
-    expect(voteCount).toHaveBeenCalledTimes(2);
+    expect(matchupUpdate).toHaveBeenCalledWith({
+      where: { id: "matchup-1" },
+      data: { status: "COMPLETED", winnerItemId: "item-b" },
+    });
   });
 
   it("a tie-breaker that ties again falls back to a random, deterministic (mocked) pick between the two items", async () => {
-    const tieBreakerEndsAt = new Date("2026-01-01T01:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:00:00.000Z");
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 60 } })
-    );
-    mockVotes({ "item-a": 4, "item-b": 4 }, tieBreakerStartedAt);
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({ "item-a": 4, "item-b": 4 });
 
     const randomLow = () => 0.1; // < 0.5 -> itemA
     await resolveTieBreaker("matchup-1", new Date(), randomLow);
@@ -196,13 +178,9 @@ describe("resolveTieBreaker", () => {
     });
   });
 
-  it("a zero-zero tie-breaker tally (no votes cast during the window) also falls back to the random pick", async () => {
-    const tieBreakerEndsAt = new Date("2026-01-01T01:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:00:00.000Z");
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 60 } })
-    );
-    mockVotes({}, tieBreakerStartedAt);
+  it("a zero-zero tie-breaker tally (no TIE_BREAKER-phase votes cast) also falls back to the random pick", async () => {
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({});
 
     await resolveTieBreaker("matchup-1", new Date(), () => 0.9);
 
@@ -214,12 +192,8 @@ describe("resolveTieBreaker", () => {
 
   it("defaults `now` to the current time and passes it through to evaluateRound", async () => {
     const before = new Date();
-    const tieBreakerEndsAt = new Date("2026-01-01T01:00:00.000Z");
-    const tieBreakerStartedAt = new Date("2026-01-01T00:00:00.000Z");
-    matchupFindUnique.mockResolvedValue(
-      makeMatchup({ tieBreakerEndsAt, round: { durationMinutes: 60 } })
-    );
-    mockVotes({ "item-a": 1, "item-b": 0 }, tieBreakerStartedAt);
+    matchupFindUnique.mockResolvedValue(makeMatchup());
+    mockVotes({ "item-a": 1, "item-b": 0 });
 
     await resolveTieBreaker("matchup-1");
 

@@ -144,7 +144,7 @@ Scoped from `_docs/plan.md` §21's "Recommended Development Order" — project s
    - `BracketItem` (id, bracket_id, title, description, image_url, seed/order, created_at)
    - `Round` (id, bracket_id, round_number, duration_minutes, starts_at, ends_at, status enum [PENDING, ACTIVE, TIE_BREAKER, COMPLETED])
    - `Matchup` (id, round_id, item_a_id, item_b_id nullable for byes, winner_item_id nullable, status enum [PENDING, ACTIVE, TIE_BREAKER, COMPLETED])
-   - `Vote` (id, matchup_id, item_id, user_id nullable, anonymous_voter_identifier nullable, comment nullable, created_at) with a unique constraint per (matchup_id, user_id) and per (matchup_id, anonymous_voter_identifier) to enforce one-vote-per-voter at the DB level.
+   - `Vote` (id, matchup_id, item_id, user_id nullable, anonymous_voter_identifier nullable, comment nullable, phase enum [ORIGINAL, TIE_BREAKER] defaulting to ORIGINAL, created_at) with a unique constraint per (matchup_id, user_id, phase) and per (matchup_id, anonymous_voter_identifier, phase) to enforce one-vote-per-voter-per-phase at the DB level. The `phase` column was added in issue #41, after this document's Phase 1 was originally written, so a voter can cast one vote during a matchup's original round and one independent revote if that matchup enters a `TIE_BREAKER` — see that issue for the full reasoning.
    - Applied via `prisma migrate dev` against the Supabase Postgres connection.
 
 5. **Supabase client helpers** (`src/lib/supabase/`) — `client.ts` (browser client), `server.ts` (server component/server action client via `@supabase/ssr`), a middleware helper for session refresh, wired into `src/middleware.ts`.

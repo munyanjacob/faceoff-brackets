@@ -95,6 +95,9 @@ describe.runIf(hasLiveDatabase)(
     let duplicateTestMatchupId: string;
     let duplicateTestItemAId: string;
     let duplicateTestItemBId: string;
+    let revoteMatchupId: string;
+    let revoteItemAId: string;
+    let revoteItemBId: string;
     let rateLimitMatchupIds: string[];
     let rateLimitItemAId: string;
     let rateLimitExtraMatchupId: string;
@@ -245,6 +248,23 @@ describe.runIf(hasLiveDatabase)(
       duplicateTestMatchupId = duplicateTestMatchup.id;
       duplicateTestItemAId = anonymousItems[6].id;
       duplicateTestItemBId = anonymousItems[7].id;
+
+      // Issue #41: a dedicated matchup for proving a real revote across
+      // phases - separate items/matchup from duplicateTestMatchup above so
+      // its own (matchupId, phase, identity) unique constraint never
+      // collides with that suite's ORIGINAL-phase duplicate test.
+      const revoteItems = await makeItems(anonymousBracketId, 2);
+      const revoteMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: revoteItems[0].id,
+          itemBId: revoteItems[1].id,
+          status: "ACTIVE",
+        },
+      });
+      revoteMatchupId = revoteMatchup.id;
+      revoteItemAId = revoteItems[0].id;
+      revoteItemBId = revoteItems[1].id;
 
       // Bracket 1b: ANONYMOUS_ALLOWED, three more items/matchups dedicated
       // to issue #23's comment tests, kept separate from the matchups above
@@ -482,6 +502,62 @@ describe.runIf(hasLiveDatabase)(
       });
       expect(votes).toHaveLength(1);
       expect(votes[0].itemId).toBe(duplicateTestItemAId);
+    });
+
+    it("issue #41: lets an original-round voter cast an independent second vote once the matchup moves to TIE_BREAKER, keeps the original Vote row (with its comment) intact, and rejects a third attempt in the same TIE_BREAKER phase as a duplicate - against the real unique constraint, not just the proactive check", async () => {
+      currentUserId = voterProfileId;
+
+      const originalVote = await castVote(
+        revoteMatchupId,
+        revoteItemAId,
+        initialVoteFormState,
+        formDataWithComment("original round pick")
+      );
+      expect(originalVote).toEqual({ error: null, votedItemId: revoteItemAId });
+
+      // Moves the matchup into TIE_BREAKER directly - entering a
+      // tie-breaker is evaluateRound's job (issue #20/#29), not castVote's,
+      // so this simulates it the same way this suite treats every other
+      // fixture status.
+      await prisma.matchup.update({
+        where: { id: revoteMatchupId },
+        data: {
+          status: "TIE_BREAKER",
+          tieBreakerEndsAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+
+      const tieBreakerVote = await castVote(
+        revoteMatchupId,
+        revoteItemBId,
+        initialVoteFormState,
+        new FormData()
+      );
+      expect(tieBreakerVote).toEqual({ error: null, votedItemId: revoteItemBId });
+
+      // A third attempt, still within the TIE_BREAKER phase, is rejected as
+      // a duplicate and reports the tie-breaker choice just cast - not a
+      // third row, and not the original-round choice either.
+      const repeatTieBreakerAttempt = await castVote(
+        revoteMatchupId,
+        revoteItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+      expect(repeatTieBreakerAttempt).toEqual({
+        error: null,
+        votedItemId: revoteItemBId,
+      });
+
+      const votes = await prisma.vote.findMany({
+        where: { matchupId: revoteMatchupId, userId: voterProfileId },
+      });
+      expect(votes).toHaveLength(2);
+      const originalRow = votes.find((vote) => vote.phase === "ORIGINAL");
+      const tieBreakerRow = votes.find((vote) => vote.phase === "TIE_BREAKER");
+      expect(originalRow?.itemId).toBe(revoteItemAId);
+      expect(originalRow?.comment).toBe("original round pick");
+      expect(tieBreakerRow?.itemId).toBe(revoteItemBId);
     });
 
     it("rejects a vote on a matchup whose round has already closed", async () => {
