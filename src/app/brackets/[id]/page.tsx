@@ -77,6 +77,7 @@ export default async function BracketVotingPage({
     // element.
     return MatchupVoting({
       bracketTitle: bracket.title,
+      bracketId: id,
       votingState: matchupListState,
       voterContext: { kind: "eligible", existingVoteItemId: null },
     });

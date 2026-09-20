@@ -44,19 +44,32 @@ import type {
  * submitted. `MatchupPanel` below only renders it (wrapped in a
  * `CommentProvider`) when at least one `<VoteButton>` is actually being
  * shown - blocked voters and voters who've already voted see neither.
+ *
+ * `bracketId` (issue #30) is only used for the "View full bracket" link
+ * into `/brackets/[id]/tree` - the full bracket-tree view has no other way
+ * to be reached from here, now that `../page.tsx` redirects straight past
+ * itself into a single matchup (#40) instead of rendering anything a link
+ * could sit next to.
  */
 export function MatchupVoting({
   bracketTitle,
+  bracketId,
   votingState,
   voterContext,
 }: {
   bracketTitle: string;
+  bracketId: string;
   votingState: VotingState;
   voterContext: VoterContext;
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
-      <h1 className="text-xl font-semibold">{bracketTitle}</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-4">
+        <h1 className="text-xl font-semibold">{bracketTitle}</h1>
+        <a href={`/brackets/${bracketId}/tree`} className="text-sm underline">
+          View full bracket
+        </a>
+      </div>
       {votingState.kind === "no-active-matchup"
         ? StatusMessage({ message: votingState.message })
         : MatchupPanel({

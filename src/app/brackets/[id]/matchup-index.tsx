@@ -41,7 +41,15 @@ export function MatchupIndex({
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
-      <h1 className="text-xl font-semibold">{bracketTitle}</h1>
+      <div className="flex flex-wrap items-baseline justify-between gap-4">
+        <h1 className="text-xl font-semibold">{bracketTitle}</h1>
+        {/* Issue #30's full bracket-tree view - same reasoning as
+            ./matchup-voting.tsx's identical link: so a voter landing on
+            this index can reach it without knowing the URL by hand. */}
+        <a href={`/brackets/${bracketId}/tree`} className="text-sm underline">
+          View full bracket
+        </a>
+      </div>
       <ul aria-label="Open matchups" className="flex flex-col gap-2">
         {matchups.map((matchup) => (
           <li key={matchup.id}>
