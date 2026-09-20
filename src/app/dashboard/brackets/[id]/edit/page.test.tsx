@@ -476,4 +476,88 @@ describe("/dashboard/brackets/[id]/edit page", () => {
       expect(itemDelete).not.toHaveBeenCalled();
     });
   });
+
+  // Issue #16: the "Publish" action, only shown on a DRAFT bracket with at
+  // least 2 items - see `./publish-actions.ts` for the Server Action itself
+  // re-checking both conditions independently of this page's render.
+  describe("publish section", () => {
+    it("includes the publish form on a DRAFT bracket with at least 2 items", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toMatch(/publish/i);
+      // The publish form's bracketId prop, proving <PublishForm> was
+      // actually included rather than the "add more items" message.
+      expect(html).toContain('"bracketId":"bracket-1"');
+    });
+
+    it("omits the publish form and explains why on a DRAFT bracket with fewer than 2 items", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toMatch(/at least 2 items/i);
+    });
+
+    it("omits the publish form and explains why on a DRAFT bracket with no items", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toMatch(/at least 2 items/i);
+    });
+
+    it("shows an already-published message instead of the publish form once the bracket is no longer a DRAFT", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "ACTIVE",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toMatch(/already been published/i);
+    });
+  });
 });

@@ -6,17 +6,30 @@ import { ItemRow } from "./item-row";
 import { RoundDurationForm } from "./round-duration-form";
 import { ScheduledStartForm } from "./scheduled-start-form";
 import { BracketStructurePreview } from "./bracket-structure-preview";
+import { PublishForm } from "./publish-form";
 import {
   computeTotalRounds,
   parseStoredRoundDurationOverrides,
 } from "./round-duration";
 
+const MINIMUM_ITEM_COUNT_TO_PUBLISH = 2;
+
 /**
  * `/dashboard/brackets/[id]/edit` - a draft bracket's item list (issue
- * #11), its round-duration configuration (issue #13), and its immediate-
- * vs-scheduled start time (issue #14), replacing the #10 placeholder that
- * used to live here. #12 still builds the rest of the editor (image
- * upload) on this same route.
+ * #11), its round-duration configuration (issue #13), its immediate-
+ * vs-scheduled start time (issue #14), and the "Publish" action that locks
+ * it all in (issue #16), replacing the #10 placeholder that used to live
+ * here. #12 still builds the rest of the editor (image upload) on this same
+ * route.
+ *
+ * The `<PublishForm>` (issue #16) is only rendered while `isDraft` *and*
+ * `items.length >= 2` - "visible on a DRAFT bracket that has at least 2
+ * items" per the issue. Below that threshold, a plain message explains why
+ * publishing isn't available yet, rather than showing a disabled button.
+ * `./publish-actions.ts`'s `publishBracket` re-checks both conditions itself
+ * (never trusting this page's render alone), so a direct call to the
+ * Server Action is rejected the same way even if this component never
+ * rendered the button.
  *
  * Still does a real ownership-scoped lookup (rather than trusting the URL's
  * `id` outright) per the Next.js Server Actions/Server Components security
@@ -136,6 +149,20 @@ export default async function EditBracketPage({
       </section>
 
       <BracketStructurePreview items={items} />
+
+      <section className="flex flex-col gap-2">
+        <h2 className="text-lg font-semibold">Publish</h2>
+
+        {isDraft ? (
+          items.length >= MINIMUM_ITEM_COUNT_TO_PUBLISH ? (
+            <PublishForm bracketId={bracket.id} />
+          ) : (
+            <p>{`Add at least ${MINIMUM_ITEM_COUNT_TO_PUBLISH} items before you can publish this bracket.`}</p>
+          )
+        ) : (
+          <p>This bracket has already been published.</p>
+        )}
+      </section>
     </div>
   );
 }
