@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { AddItemForm } from "./add-item-form";
 import { ItemRow } from "./item-row";
 import { RoundDurationForm } from "./round-duration-form";
+import { BracketStructurePreview } from "./bracket-structure-preview";
 import {
   computeTotalRounds,
   parseStoredRoundDurationOverrides,
@@ -119,6 +120,8 @@ export default async function EditBracketPage({
           </p>
         )}
       </section>
+
+      <BracketStructurePreview items={items} />
     </div>
   );
 }

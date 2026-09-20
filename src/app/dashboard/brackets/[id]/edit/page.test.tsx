@@ -4,6 +4,18 @@ const getUser = vi.fn();
 const bracketFindFirst = vi.fn();
 const itemFindMany = vi.fn();
 
+// Write spies on every model this page's data could plausibly reach,
+// covering issue #15's "viewing this preview creates no database rows"
+// criterion concretely rather than only by code inspection: see the
+// "renders the structure preview without writing to the database" test
+// below.
+const bracketCreate = vi.fn();
+const bracketUpdate = vi.fn();
+const bracketDelete = vi.fn();
+const itemCreate = vi.fn();
+const itemUpdate = vi.fn();
+const itemDelete = vi.fn();
+
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({
     auth: { getUser },
@@ -12,8 +24,18 @@ vi.mock("@/lib/supabase/server", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    bracket: { findFirst: bracketFindFirst },
-    bracketItem: { findMany: itemFindMany },
+    bracket: {
+      findFirst: bracketFindFirst,
+      create: bracketCreate,
+      update: bracketUpdate,
+      delete: bracketDelete,
+    },
+    bracketItem: {
+      findMany: itemFindMany,
+      create: itemCreate,
+      update: itemUpdate,
+      delete: itemDelete,
+    },
   },
 }));
 
@@ -24,6 +46,12 @@ describe("/dashboard/brackets/[id]/edit page", () => {
     getUser.mockReset();
     bracketFindFirst.mockReset();
     itemFindMany.mockReset();
+    bracketCreate.mockReset();
+    bracketUpdate.mockReset();
+    bracketDelete.mockReset();
+    itemCreate.mockReset();
+    itemUpdate.mockReset();
+    itemDelete.mockReset();
     getUser.mockResolvedValue({
       data: { user: { id: "creator-1" } },
       error: null,
@@ -262,5 +290,131 @@ describe("/dashboard/brackets/[id]/edit page", () => {
     expect(thrown).toBeDefined();
     expect((thrown as { digest?: string }).digest).toContain("404");
     expect(itemFindMany).not.toHaveBeenCalled();
+  });
+
+  // Issue #15: the "Preview structure" view. Like the rest of this file,
+  // these call the Server Component function directly rather than actually
+  // rendering it, so nested function components (`<BracketStructurePreview>`
+  // included) show up as an unrendered element - only its `props` (not its
+  // internal JSX) serialize. That's exactly what's under test here: that
+  // `./page.tsx` wires the live, just-queried `items` straight through to
+  // `<BracketStructurePreview>` on every call, with no re-query, caching, or
+  // staleness in between. The preview's own rendering behavior (bye
+  // labeling, the <2 items message, recomputing from its `items` prop) is
+  // unit-tested directly in `./bracket-structure-preview.test.tsx`.
+  describe("structure preview", () => {
+    it("passes the current, live items straight through to the structure preview", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+        { id: "item-3", title: "Frasier", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toContain(
+        '"items":[{"id":"item-1","title":"Seinfeld","description":null,"imageUrl":null},' +
+          '{"id":"item-2","title":"Cheers","description":null,"imageUrl":null},' +
+          '{"id":"item-3","title":"Frasier","description":null,"imageUrl":null}]'
+      );
+    });
+
+    it("still passes the (short) item list through when there are fewer than 2 items, rather than skipping the preview", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      const html = JSON.stringify(result);
+      expect(html).toContain(
+        '"items":[{"id":"item-1","title":"Seinfeld","description":null,"imageUrl":null}]'
+      );
+    });
+
+    it("passes a fresh items array on every call, reflecting an item added/removed since the last one - not a stale, cached list", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+
+      // First "open": two items.
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+      ]);
+      const firstOpen = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+      expect(JSON.stringify(firstOpen)).toContain(
+        '"items":[{"id":"item-1","title":"Seinfeld","description":null,"imageUrl":null},' +
+          '{"id":"item-2","title":"Cheers","description":null,"imageUrl":null}]'
+      );
+
+      // An item is added (#11) between opens - re-invoking the same page
+      // function the way a fresh request/revalidation would must reflect
+      // the new list, not the one captured above.
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+        { id: "item-3", title: "Frasier", description: null, imageUrl: null },
+      ]);
+      const secondOpen = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+      const secondHtml = JSON.stringify(secondOpen);
+      expect(secondHtml).toContain('"id":"item-3","title":"Frasier"');
+      expect(secondHtml).not.toBe(JSON.stringify(firstOpen));
+    });
+
+    it("renders the page (structure preview included) without creating, updating, or deleting any database rows", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        title: "Best Sitcom",
+        status: "DRAFT",
+      });
+      itemFindMany.mockResolvedValue([
+        { id: "item-1", title: "Seinfeld", description: null, imageUrl: null },
+        { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+        { id: "item-3", title: "Frasier", description: null, imageUrl: null },
+      ]);
+
+      const result = await EditBracketPage({
+        params: Promise.resolve({ id: "bracket-1" }),
+        searchParams: Promise.resolve({}),
+      });
+
+      // Sanity check the preview is actually in the tree (its `items` prop
+      // present), so this test would fail loudly if the wiring broke
+      // instead of passing vacuously.
+      expect(JSON.stringify(result)).toContain('"id":"item-3","title":"Frasier"');
+
+      expect(bracketCreate).not.toHaveBeenCalled();
+      expect(bracketUpdate).not.toHaveBeenCalled();
+      expect(bracketDelete).not.toHaveBeenCalled();
+      expect(itemCreate).not.toHaveBeenCalled();
+      expect(itemUpdate).not.toHaveBeenCalled();
+      expect(itemDelete).not.toHaveBeenCalled();
+    });
   });
 });
