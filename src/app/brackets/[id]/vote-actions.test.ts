@@ -46,9 +46,21 @@ vi.mock("node:crypto", async (importOriginal) => {
   return { ...actual, randomUUID };
 });
 
-const { castVote, initialVoteFormState, RATE_LIMIT_ERROR, VOTE_RATE_LIMIT_MAX_VOTES } =
-  await import("./vote-actions");
+const {
+  castVote,
+  initialVoteFormState,
+  RATE_LIMIT_ERROR,
+  VOTE_RATE_LIMIT_MAX_VOTES,
+  MAX_COMMENT_LENGTH,
+  COMMENT_TOO_LONG_ERROR,
+} = await import("./vote-actions");
 const { signAnonymousVoterId } = await import("./voter-identity");
+
+function formDataWithComment(comment: string): FormData {
+  const formData = new FormData();
+  formData.set("comment", comment);
+  return formData;
+}
 
 function activeMatchup(overrides: Record<string, unknown> = {}) {
   return {
@@ -243,6 +255,7 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: "profile-1",
         anonymousVoterIdentifier: null,
+        comment: null,
       },
     });
     expect(cookieSet).not.toHaveBeenCalled();
@@ -295,6 +308,7 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
+        comment: null,
       },
     });
   });
@@ -313,6 +327,7 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: null,
         anonymousVoterIdentifier: "existing-anon-id",
+        comment: null,
       },
     });
   });
@@ -340,6 +355,7 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
+        comment: null,
       },
     });
   });
@@ -357,6 +373,7 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: null,
         anonymousVoterIdentifier: "generated-anon-id",
+        comment: null,
       },
     });
   });
@@ -473,6 +490,127 @@ describe("castVote", () => {
 
       expect(result).toEqual({ error: null, votedItemId: "item-b" });
       expect(voteCount).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("optional comment (issue #23)", () => {
+    it("saves a trimmed comment on the new Vote row", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment("  Great choice!  ")
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-a" });
+      expect(voteCreate).toHaveBeenCalledWith({
+        data: {
+          matchupId: "matchup-1",
+          itemId: "item-a",
+          userId: null,
+          anonymousVoterIdentifier: "generated-anon-id",
+          comment: "Great choice!",
+        },
+      });
+    });
+
+    it("saves comment = null when the comment field is left empty - a comment is never required", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment("")
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-a" });
+      expect(voteCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ comment: null }) })
+      );
+    });
+
+    it("saves comment = null when the comment field is whitespace-only", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment("   \n\t  ")
+      );
+
+      expect(voteCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ comment: null }) })
+      );
+    });
+
+    it("saves comment = null when no comment field is present at all (e.g. a bare FormData)", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+      expect(voteCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ comment: null }) })
+      );
+    });
+
+    it("accepts a comment exactly at MAX_COMMENT_LENGTH", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+      const exactLengthComment = "a".repeat(MAX_COMMENT_LENGTH);
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment(exactLengthComment)
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-a" });
+      expect(voteCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ comment: exactLengthComment }),
+        })
+      );
+    });
+
+    it("rejects a comment over MAX_COMMENT_LENGTH with an error, without creating a Vote - not silently truncated", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      const tooLongComment = "a".repeat(MAX_COMMENT_LENGTH + 1);
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment(tooLongComment)
+      );
+
+      expect(result).toEqual({ error: COMMENT_TOO_LONG_ERROR, votedItemId: null });
+      expect(voteCreate).not.toHaveBeenCalled();
+    });
+
+    it("does not let an over-length comment override the existing-vote short circuit", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteFindFirst.mockResolvedValue({ id: "vote-existing", itemId: "item-b" });
+      const tooLongComment = "a".repeat(MAX_COMMENT_LENGTH + 1);
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        formDataWithComment(tooLongComment)
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-b" });
+      expect(voteCreate).not.toHaveBeenCalled();
     });
   });
 });

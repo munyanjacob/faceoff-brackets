@@ -54,6 +54,20 @@ export const RATE_LIMIT_ERROR =
   "You've cast a lot of votes very quickly - please wait a few minutes and try again.";
 
 /**
+ * Issue #23's optional vote comment. 500 characters is comfortably more
+ * than a short reaction (a couple of sentences) while still keeping a
+ * `Vote` row's comment skimmable in a results list - the same "casual
+ * polling, not a discussion forum" scope `./vote-actions.ts`'s rate-limit
+ * comment above cites from `_docs/outdated/plan.md` SS7/SS8 (comment
+ * *threads*, replies, likes are explicitly out of scope for the whole
+ * MVP). Stated here, not just picked silently, per the issue's "pick a
+ * specific number and state it" ask - also called out in the issue #23
+ * comment.
+ */
+export const MAX_COMMENT_LENGTH = 500;
+export const COMMENT_TOO_LONG_ERROR = `Comments can be at most ${MAX_COMMENT_LENGTH} characters.`;
+
+/**
  * Basic anti-abuse rate limit (issue #35). Caps how many `Vote` rows a
  * single voter identifier - signed-in `userId` or anonymous
  * `anonymousVoterIdentifier`, i.e. `VoterLookupKey` below - can create
@@ -89,7 +103,7 @@ export async function castVote(
   matchupId: string,
   itemId: string,
   _prevState: VoteFormState,
-  _formData: FormData
+  formData: FormData
 ): Promise<VoteFormState> {
   const matchup = await prisma.matchup.findUnique({
     where: { id: matchupId },
@@ -181,6 +195,29 @@ export async function castVote(
     return { error: RATE_LIMIT_ERROR, votedItemId: null };
   }
 
+  // Issue #23's optional comment. Checked here, not earlier alongside the
+  // matchup/round/item checks above: those are all "is this vote even
+  // attemptable" checks against data already in hand, independent of
+  // whether a Vote is actually about to be created - a comment, by
+  // contrast, is only ever relevant right before the insert it would land
+  // on. In particular, this means a stale or oversized comment value never
+  // overrides the existing-vote short-circuit above: resubmitting an
+  // already-voted matchup (e.g. a duplicate click) keeps returning that
+  // existing choice regardless of what's currently in the comment field.
+  //
+  // `formData.get(...)` returns `null` when the field is absent entirely
+  // (a non-JS form submission that never included it, or a test harness's
+  // bare `new FormData()`) - treated the same as an empty string. Trimmed
+  // before both the length check and the null-vs-string decision, so
+  // whitespace-only input (e.g. a few spaces) saves as `comment = null`
+  // too, per the issue's "a comment is never required" criterion.
+  const rawComment = formData.get("comment");
+  const trimmedComment = typeof rawComment === "string" ? rawComment.trim() : "";
+  if (trimmedComment.length > MAX_COMMENT_LENGTH) {
+    return { error: COMMENT_TOO_LONG_ERROR, votedItemId: null };
+  }
+  const comment = trimmedComment.length > 0 ? trimmedComment : null;
+
   try {
     const created = await prisma.vote.create({
       data: {
@@ -191,6 +228,7 @@ export async function castVote(
           "anonymousVoterIdentifier" in voterKey
             ? voterKey.anonymousVoterIdentifier
             : null,
+        comment,
       },
     });
 

@@ -2,6 +2,7 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
+import { MAX_COMMENT_LENGTH, useVoteComment } from "./comment-field";
 import { castVote, initialVoteFormState } from "./vote-actions";
 
 /**
@@ -26,6 +27,15 @@ import { castVote, initialVoteFormState } from "./vote-actions";
  * matchup from `./matchups/[matchupId]/page.tsx` - supplies the correct,
  * consistent "Your vote" label on the right item moments later. This transient gap is
  * a deliberate simplicity trade-off, not an oversight.
+ *
+ * Issue #23's comment field lives outside this form entirely
+ * (`./comment-field.tsx`'s `CommentField`, rendered once per matchup by
+ * `./matchup-voting.tsx`) - a hidden `name="comment"` input mirrors its
+ * current value (read via `useVoteComment`) into *this* button's own form,
+ * so whichever of the matchup's two `<VoteButton>`s actually gets clicked
+ * submits the same comment text alongside its vote. This is also why a
+ * comment can never be submitted on its own: it only ever travels inside
+ * one of these two vote forms, neither of which has any other submit path.
  */
 export function VoteButton({
   matchupId,
@@ -34,6 +44,8 @@ export function VoteButton({
   matchupId: string;
   itemId: string;
 }) {
+  const comment = useVoteComment();
+  const commentTooLong = comment.length > MAX_COMMENT_LENGTH;
   const castVoteForThisItem = castVote.bind(null, matchupId, itemId);
   const [state, formAction] = useActionState(
     castVoteForThisItem,
@@ -50,7 +62,8 @@ export function VoteButton({
 
   return (
     <form action={formAction} className="mt-2 flex flex-col items-center gap-1">
-      <SubmitButton />
+      <input type="hidden" name="comment" value={comment} />
+      <SubmitButton disabled={commentTooLong} />
       {state.error ? (
         <p role="alert" className="text-sm text-red-600">
           {state.error}
@@ -60,13 +73,13 @@ export function VoteButton({
   );
 }
 
-function SubmitButton() {
+function SubmitButton({ disabled }: { disabled?: boolean }) {
   const { pending } = useFormStatus();
 
   return (
     <button
       type="submit"
-      disabled={pending}
+      disabled={pending || disabled}
       className="border px-4 py-1 disabled:opacity-50"
     >
       {pending ? "Voting..." : "Vote"}

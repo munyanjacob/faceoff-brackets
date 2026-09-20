@@ -1,3 +1,4 @@
+import { CommentField, CommentProvider } from "./comment-field";
 import { VoteButton } from "./vote-button";
 import type {
   VoterContext,
@@ -35,11 +36,14 @@ import type {
  * see e.g. `../../dashboard/brackets/[id]/edit/item-row.tsx` having no
  * `item-row.test.tsx`).
  *
- * Layout intentionally leaves room below the two vote buttons for #23's
- * comment field (per `_docs/outdated/plan.md` SS13's mockup - image+title
- * stacked per item, a vote button under each, an optional comment field
- * below both) rather than, say, putting each item in its own bordered card
- * that would visually "close off" before a comment field could be added.
+ * Issue #23's comment field is rendered below both items (per
+ * `_docs/outdated/plan.md` SS13's mockup - image+title stacked per item, a
+ * vote button under each, an optional comment field below both), not
+ * duplicated per item - see `./comment-field.tsx`'s top comment for how its
+ * value reaches whichever of the two `<VoteButton>`s actually gets
+ * submitted. `MatchupPanel` below only renders it (wrapped in a
+ * `CommentProvider`) when at least one `<VoteButton>` is actually being
+ * shown - blocked voters and voters who've already voted see neither.
  */
 export function MatchupVoting({
   bracketTitle,
@@ -95,6 +99,10 @@ function MatchupPanel({
       message: "Voting isn't open right now - check back soon for the next round.",
     });
   }
+  const completeMatchup = matchup as VotingMatchup & {
+    itemA: VotingItem;
+    itemB: VotingItem;
+  };
 
   return (
     <section aria-label="Current matchup" className="flex flex-col gap-4">
@@ -113,11 +121,44 @@ function MatchupPanel({
       {voterContext.kind === "blocked"
         ? StatusMessage({ message: voterContext.message })
         : null}
-      <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-center">
-        {ItemPanel({ matchupId: matchup.id, item: matchup.itemA, voterContext })}
-        {ItemPanel({ matchupId: matchup.id, item: matchup.itemB, voterContext })}
-      </div>
+      {VotingArea({ matchup: completeMatchup, voterContext })}
     </section>
+  );
+}
+
+/**
+ * The two `ItemPanel`s side by side, plus issue #23's shared comment field
+ * below them when there's actually a vote to attach it to - `voterContext`
+ * is blocked, or the voter already has a `Vote` on this matchup, means
+ * neither item renders a `<VoteButton>` (see `VoteControl` below), so
+ * there's nothing for a comment to attach to either.
+ */
+function VotingArea({
+  matchup,
+  voterContext,
+}: {
+  matchup: VotingMatchup & { itemA: VotingItem; itemB: VotingItem };
+  voterContext: VoterContext;
+}) {
+  const itemsRow = (
+    <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-center">
+      {ItemPanel({ matchupId: matchup.id, item: matchup.itemA, voterContext })}
+      {ItemPanel({ matchupId: matchup.id, item: matchup.itemB, voterContext })}
+    </div>
+  );
+
+  const canStillVote =
+    voterContext.kind === "eligible" && voterContext.existingVoteItemId === null;
+
+  if (!canStillVote) {
+    return itemsRow;
+  }
+
+  return (
+    <CommentProvider>
+      {itemsRow}
+      <CommentField />
+    </CommentProvider>
   );
 }
 
