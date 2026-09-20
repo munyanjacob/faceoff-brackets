@@ -417,14 +417,22 @@ describe("castVote", () => {
     expect(result).toEqual({ error: null, votedItemId: "item-b" });
   });
 
-  it("rethrows a non-P2002 error from the Vote insert instead of swallowing it", async () => {
+  it("returns a generic user-facing error for a non-P2002 error from the Vote insert, instead of an unhandled exception (issue #36)", async () => {
     matchupFindUnique.mockResolvedValue(activeMatchup());
     getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
     voteCreate.mockRejectedValue(new Error("connection reset"));
 
-    await expect(
-      castVote("matchup-1", "item-a", initialVoteFormState, new FormData())
-    ).rejects.toThrow("connection reset");
+    const result = await castVote(
+      "matchup-1",
+      "item-a",
+      initialVoteFormState,
+      new FormData()
+    );
+
+    expect(result).toEqual({
+      error: "Something went wrong. Please try again.",
+      votedItemId: null,
+    });
   });
 
   describe("rate limiting (issue #35)", () => {

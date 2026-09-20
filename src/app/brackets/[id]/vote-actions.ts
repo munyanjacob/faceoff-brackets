@@ -2,6 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 import { cookies } from "next/headers";
+import { unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { Prisma } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -99,10 +100,30 @@ export const COMMENT_TOO_LONG_ERROR = `Comments can be at most ${MAX_COMMENT_LEN
 export const VOTE_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 export const VOTE_RATE_LIMIT_MAX_VOTES = 20;
 
+// Issue #36: a generic, user-facing fallback for a DB/Supabase failure that
+// isn't one of the specific errors above - e.g. the database being
+// temporarily unreachable. Rendered inline by `./vote-button.tsx` the same
+// way as any other `state.error`, rather than letting the exception
+// propagate into Next's generic error boundary/blank page.
+export const UNEXPECTED_ERROR = "Something went wrong. Please try again.";
+
 export async function castVote(
   matchupId: string,
   itemId: string,
   _prevState: VoteFormState,
+  formData: FormData
+): Promise<VoteFormState> {
+  try {
+    return await castVoteUnsafe(matchupId, itemId, formData);
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR, votedItemId: null };
+  }
+}
+
+async function castVoteUnsafe(
+  matchupId: string,
+  itemId: string,
   formData: FormData
 ): Promise<VoteFormState> {
   const matchup = await prisma.matchup.findUnique({
