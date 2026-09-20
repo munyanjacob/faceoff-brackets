@@ -393,6 +393,28 @@ describe("publishBracket", () => {
     expect(transaction).not.toHaveBeenCalled();
   });
 
+  it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+      scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+    });
+    itemCount.mockRejectedValue(new Error("connection reset"));
+
+    const result = await publishBracket(
+      "bracket-1",
+      initialPublishFormState,
+      new FormData()
+    );
+
+    expect(result).toEqual({
+      error: "Something went wrong. Please try again.",
+    });
+  });
+
   it("404s instead of publishing a bracket that isn't the signed-in creator's", async () => {
     bracketFindFirst.mockResolvedValue(null);
 

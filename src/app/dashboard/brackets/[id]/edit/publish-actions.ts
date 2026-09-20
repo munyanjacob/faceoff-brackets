@@ -1,6 +1,6 @@
 "use server";
 
-import { notFound } from "next/navigation";
+import { notFound, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
@@ -69,6 +69,13 @@ const NOT_ENOUGH_ITEMS_ERROR =
 
 const MINIMUM_ITEM_COUNT = 2;
 
+// Issue #36: a generic, user-facing fallback for a DB failure that isn't one
+// of the specific errors above - e.g. the database being temporarily
+// unreachable. Rendered inline by `./publish-form.tsx` the same way as any
+// other `state.error`, rather than letting the exception propagate into
+// Next's generic error boundary/blank page.
+const UNEXPECTED_ERROR = "Something went wrong. Please try again.";
+
 async function requireOwnedBracket(bracketId: string) {
   const supabase = await createClient();
   const {
@@ -95,67 +102,72 @@ export async function publishBracket(
   _prevState: PublishFormState,
   _formData: FormData
 ): Promise<PublishFormState> {
-  const bracket = await requireOwnedBracket(bracketId);
+  try {
+    const bracket = await requireOwnedBracket(bracketId);
 
-  if (bracket.status !== "DRAFT") {
-    return { error: NOT_DRAFT_ERROR };
-  }
+    if (bracket.status !== "DRAFT") {
+      return { error: NOT_DRAFT_ERROR };
+    }
 
-  const itemCount = await prisma.bracketItem.count({
-    where: { bracketId: bracket.id },
-  });
-
-  if (itemCount < MINIMUM_ITEM_COUNT) {
-    return { error: NOT_ENOUGH_ITEMS_ERROR };
-  }
-
-  const status = bracket.scheduledStartAt ? "SCHEDULED" : "ACTIVE";
-  const immediateStart = status === "ACTIVE";
-  const publishedAt = new Date();
-
-  const items = await prisma.bracketItem.findMany({
-    where: { bracketId: bracket.id },
-    orderBy: { createdAt: "asc" },
-  });
-
-  const overrides = parseStoredRoundDurationOverrides(
-    bracket.roundDurationOverrides
-  );
-  const durationMinutes =
-    overrides[1] ?? bracket.defaultRoundDurationMinutes;
-
-  const roundPlan = buildRoundOnePlan(items, {
-    durationMinutes,
-    immediateStart,
-    now: publishedAt,
-  });
-
-  await prisma.$transaction(async (tx) => {
-    await tx.bracket.update({
-      where: { id: bracket.id },
-      data: { status, publishedAt },
+    const itemCount = await prisma.bracketItem.count({
+      where: { bracketId: bracket.id },
     });
 
-    await tx.round.create({
-      data: {
-        bracketId: bracket.id,
-        roundNumber: roundPlan.roundNumber,
-        durationMinutes: roundPlan.durationMinutes,
-        status: roundPlan.status,
-        startsAt: roundPlan.startsAt,
-        endsAt: roundPlan.endsAt,
-        matchups: {
-          create: roundPlan.matchups.map((matchup) => ({
-            itemAId: matchup.itemAId,
-            itemBId: matchup.itemBId,
-            winnerItemId: matchup.winnerItemId,
-            status: matchup.status,
-          })),
+    if (itemCount < MINIMUM_ITEM_COUNT) {
+      return { error: NOT_ENOUGH_ITEMS_ERROR };
+    }
+
+    const status = bracket.scheduledStartAt ? "SCHEDULED" : "ACTIVE";
+    const immediateStart = status === "ACTIVE";
+    const publishedAt = new Date();
+
+    const items = await prisma.bracketItem.findMany({
+      where: { bracketId: bracket.id },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const overrides = parseStoredRoundDurationOverrides(
+      bracket.roundDurationOverrides
+    );
+    const durationMinutes =
+      overrides[1] ?? bracket.defaultRoundDurationMinutes;
+
+    const roundPlan = buildRoundOnePlan(items, {
+      durationMinutes,
+      immediateStart,
+      now: publishedAt,
+    });
+
+    await prisma.$transaction(async (tx) => {
+      await tx.bracket.update({
+        where: { id: bracket.id },
+        data: { status, publishedAt },
+      });
+
+      await tx.round.create({
+        data: {
+          bracketId: bracket.id,
+          roundNumber: roundPlan.roundNumber,
+          durationMinutes: roundPlan.durationMinutes,
+          status: roundPlan.status,
+          startsAt: roundPlan.startsAt,
+          endsAt: roundPlan.endsAt,
+          matchups: {
+            create: roundPlan.matchups.map((matchup) => ({
+              itemAId: matchup.itemAId,
+              itemBId: matchup.itemBId,
+              winnerItemId: matchup.winnerItemId,
+              status: matchup.status,
+            })),
+          },
         },
-      },
+      });
     });
-  });
 
-  revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
-  return { error: null };
+    revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
+    return { error: null };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR };
+  }
 }

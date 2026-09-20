@@ -1,6 +1,6 @@
 "use server";
 
-import { notFound } from "next/navigation";
+import { notFound, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
@@ -54,6 +54,15 @@ const NOT_DRAFT_ERROR =
 
 const IMAGE_UPLOAD_ERROR = "Failed to upload the image. Please try again.";
 
+// Issue #36: a generic, user-facing fallback for a DB/Supabase failure that
+// isn't one of the specific errors above - e.g. the database being
+// temporarily unreachable. Rendered inline by `./add-item-form.tsx`/
+// `./item-row.tsx` the same way as any other `state.error`, rather than
+// letting the exception propagate into Next's generic error boundary/blank
+// page. `unstable_rethrow` (see each `catch` below) makes sure this never
+// swallows `notFound()`'s own thrown navigation error.
+const UNEXPECTED_ERROR = "Something went wrong. Please try again.";
+
 async function requireOwnedBracket(bracketId: string) {
   const supabase = await createClient();
   const {
@@ -80,37 +89,42 @@ export async function addItem(
   _prevState: ItemFormState,
   formData: FormData
 ): Promise<ItemFormState> {
-  const bracket = await requireOwnedBracket(bracketId);
+  try {
+    const bracket = await requireOwnedBracket(bracketId);
 
-  if (bracket.status !== "DRAFT") {
-    return { error: NOT_DRAFT_ERROR };
-  }
-
-  const validated = validateBracketItemForm(formData);
-  if (!validated.ok) {
-    return { error: validated.error };
-  }
-
-  let imageUrl: string | null = null;
-  if (validated.data.image) {
-    try {
-      imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
-    } catch {
-      return { error: IMAGE_UPLOAD_ERROR };
+    if (bracket.status !== "DRAFT") {
+      return { error: NOT_DRAFT_ERROR };
     }
+
+    const validated = validateBracketItemForm(formData);
+    if (!validated.ok) {
+      return { error: validated.error };
+    }
+
+    let imageUrl: string | null = null;
+    if (validated.data.image) {
+      try {
+        imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
+      } catch {
+        return { error: IMAGE_UPLOAD_ERROR };
+      }
+    }
+
+    await prisma.bracketItem.create({
+      data: {
+        bracketId: bracket.id,
+        title: validated.data.title,
+        description: validated.data.description,
+        imageUrl,
+      },
+    });
+
+    revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
+    return { error: null };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR };
   }
-
-  await prisma.bracketItem.create({
-    data: {
-      bracketId: bracket.id,
-      title: validated.data.title,
-      description: validated.data.description,
-      imageUrl,
-    },
-  });
-
-  revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
-  return { error: null };
 }
 
 export async function updateItem(
@@ -119,48 +133,53 @@ export async function updateItem(
   _prevState: ItemFormState,
   formData: FormData
 ): Promise<ItemFormState> {
-  const bracket = await requireOwnedBracket(bracketId);
+  try {
+    const bracket = await requireOwnedBracket(bracketId);
 
-  if (bracket.status !== "DRAFT") {
-    return { error: NOT_DRAFT_ERROR };
-  }
-
-  const item = await prisma.bracketItem.findFirst({
-    where: { id: itemId, bracketId: bracket.id },
-  });
-  if (!item) {
-    notFound();
-  }
-
-  const validated = validateBracketItemForm(formData);
-  if (!validated.ok) {
-    return { error: validated.error };
-  }
-
-  // No new file was chosen: `imageUrl` stays `undefined`, so the spread
-  // below omits the key entirely and Prisma leaves the existing
-  // `image_url` untouched - the image is optional and replacing it is only
-  // supposed to happen when a new file is actually uploaded (issue #12).
-  let imageUrl: string | undefined;
-  if (validated.data.image) {
-    try {
-      imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
-    } catch {
-      return { error: IMAGE_UPLOAD_ERROR };
+    if (bracket.status !== "DRAFT") {
+      return { error: NOT_DRAFT_ERROR };
     }
+
+    const item = await prisma.bracketItem.findFirst({
+      where: { id: itemId, bracketId: bracket.id },
+    });
+    if (!item) {
+      notFound();
+    }
+
+    const validated = validateBracketItemForm(formData);
+    if (!validated.ok) {
+      return { error: validated.error };
+    }
+
+    // No new file was chosen: `imageUrl` stays `undefined`, so the spread
+    // below omits the key entirely and Prisma leaves the existing
+    // `image_url` untouched - the image is optional and replacing it is only
+    // supposed to happen when a new file is actually uploaded (issue #12).
+    let imageUrl: string | undefined;
+    if (validated.data.image) {
+      try {
+        imageUrl = await uploadBracketItemImage(bracket.id, validated.data.image);
+      } catch {
+        return { error: IMAGE_UPLOAD_ERROR };
+      }
+    }
+
+    await prisma.bracketItem.update({
+      where: { id: item.id },
+      data: {
+        title: validated.data.title,
+        description: validated.data.description,
+        ...(imageUrl ? { imageUrl } : {}),
+      },
+    });
+
+    revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
+    return { error: null };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR };
   }
-
-  await prisma.bracketItem.update({
-    where: { id: item.id },
-    data: {
-      title: validated.data.title,
-      description: validated.data.description,
-      ...(imageUrl ? { imageUrl } : {}),
-    },
-  });
-
-  revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
-  return { error: null };
 }
 
 export async function removeItem(
@@ -169,21 +188,26 @@ export async function removeItem(
   _prevState: ItemFormState,
   _formData: FormData
 ): Promise<ItemFormState> {
-  const bracket = await requireOwnedBracket(bracketId);
+  try {
+    const bracket = await requireOwnedBracket(bracketId);
 
-  if (bracket.status !== "DRAFT") {
-    return { error: NOT_DRAFT_ERROR };
+    if (bracket.status !== "DRAFT") {
+      return { error: NOT_DRAFT_ERROR };
+    }
+
+    const item = await prisma.bracketItem.findFirst({
+      where: { id: itemId, bracketId: bracket.id },
+    });
+    if (!item) {
+      notFound();
+    }
+
+    await prisma.bracketItem.delete({ where: { id: item.id } });
+
+    revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
+    return { error: null };
+  } catch (err) {
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR };
   }
-
-  const item = await prisma.bracketItem.findFirst({
-    where: { id: itemId, bracketId: bracket.id },
-  });
-  if (!item) {
-    notFound();
-  }
-
-  await prisma.bracketItem.delete({ where: { id: item.id } });
-
-  revalidatePath(`/dashboard/brackets/${bracket.id}/edit`);
-  return { error: null };
 }
