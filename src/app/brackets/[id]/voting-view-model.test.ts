@@ -3,7 +3,10 @@ import {
   BETWEEN_ROUNDS_MESSAGE,
   COMPLETED_MESSAGE,
   NOT_STARTED_MESSAGE,
+  SIGN_IN_TO_VOTE_MESSAGE,
+  determineVoterContext,
   determineVotingState,
+  isVotableMatchupStatus,
   type VotingMatchup,
   type VotingRound,
 } from "./voting-view-model";
@@ -104,5 +107,39 @@ describe("determineVotingState", () => {
     const rounds: VotingRound[] = [{ status: "ACTIVE", matchups: [incomplete] }];
     const state = determineVotingState({ status: "ACTIVE" }, rounds);
     expect(state).toEqual({ kind: "no-active-matchup", message: BETWEEN_ROUNDS_MESSAGE });
+  });
+});
+
+describe("isVotableMatchupStatus", () => {
+  it("treats ACTIVE and TIE_BREAKER as votable", () => {
+    expect(isVotableMatchupStatus("ACTIVE")).toBe(true);
+    expect(isVotableMatchupStatus("TIE_BREAKER")).toBe(true);
+  });
+
+  it("treats PENDING and COMPLETED as not votable", () => {
+    expect(isVotableMatchupStatus("PENDING")).toBe(false);
+    expect(isVotableMatchupStatus("COMPLETED")).toBe(false);
+  });
+});
+
+describe("determineVoterContext", () => {
+  it("blocks an ACCOUNT_REQUIRED bracket for a signed-out visitor, with a sign-in message", () => {
+    const context = determineVoterContext("ACCOUNT_REQUIRED", false, null);
+    expect(context).toEqual({ kind: "blocked", message: SIGN_IN_TO_VOTE_MESSAGE });
+  });
+
+  it("allows an ACCOUNT_REQUIRED bracket for a signed-in visitor", () => {
+    const context = determineVoterContext("ACCOUNT_REQUIRED", true, null);
+    expect(context).toEqual({ kind: "eligible", existingVoteItemId: null });
+  });
+
+  it("allows an ANONYMOUS_ALLOWED bracket for a signed-out visitor", () => {
+    const context = determineVoterContext("ANONYMOUS_ALLOWED", false, null);
+    expect(context).toEqual({ kind: "eligible", existingVoteItemId: null });
+  });
+
+  it("passes an existing vote's item id through when eligible", () => {
+    const context = determineVoterContext("ANONYMOUS_ALLOWED", false, "item-a");
+    expect(context).toEqual({ kind: "eligible", existingVoteItemId: "item-a" });
   });
 });

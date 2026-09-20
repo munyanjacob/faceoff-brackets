@@ -84,6 +84,62 @@ export const BETWEEN_ROUNDS_MESSAGE =
   "Voting isn't open right now - check back soon for the next round.";
 
 /**
+ * The `Matchup.status` values a vote can ever be cast against (issue #22).
+ * Shared as a single source of truth between `determineVotingState` below
+ * (which decides whether to render vote buttons at all) and
+ * `./vote-actions.ts`'s `castVote` (which must independently re-check the
+ * same rule server-side, never trusting that this page rendered the button
+ * - the same "not just a hidden button" reasoning as
+ * `../../dashboard/brackets/[id]/edit/publish-actions.ts`).
+ *
+ * `TIE_BREAKER` is included deliberately, not just `ACTIVE`: issue #21
+ * already treats a `TIE_BREAKER` matchup as votable (see this file's top
+ * comment), and issue #29 (tie-breaker resolution, not yet built) is
+ * explicit that "only votes cast from that point on count toward its
+ * outcome" - i.e. tie-breaker votes are real, counted votes, not a no-op.
+ * Rejecting them here would make #29 impossible to satisfy later. Judgment
+ * call, documented in the issue #22 comment.
+ */
+export const VOTABLE_MATCHUP_STATUSES = ["ACTIVE", "TIE_BREAKER"] as const;
+
+export function isVotableMatchupStatus(
+  status: string
+): status is (typeof VOTABLE_MATCHUP_STATUSES)[number] {
+  return (VOTABLE_MATCHUP_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Whether the current visitor is even allowed to attempt a vote on this
+ * bracket, and - if they are - which item (if any) they've already voted
+ * for on the current matchup. Computed once per page render by
+ * `./page.tsx` (it needs a signed-in check and a `Vote` lookup, both of
+ * which require I/O `determineVotingState` deliberately doesn't do) and
+ * threaded down to `./matchup-voting.tsx`.
+ *
+ * Kept as a plain, synchronous, I/O-free function here (same reasoning as
+ * `determineVotingState`) so the "ACCOUNT_REQUIRED + signed out -> blocked"
+ * rule (issue #22's third acceptance criterion) can be unit-tested without
+ * a database or a real Supabase session.
+ */
+export type VoterContext =
+  | { kind: "blocked"; message: string }
+  | { kind: "eligible"; existingVoteItemId: string | null };
+
+export const SIGN_IN_TO_VOTE_MESSAGE = "Sign in to vote on this bracket.";
+
+export function determineVoterContext(
+  votingRequirement: string,
+  isSignedIn: boolean,
+  existingVoteItemId: string | null
+): VoterContext {
+  if (votingRequirement === "ACCOUNT_REQUIRED" && !isSignedIn) {
+    return { kind: "blocked", message: SIGN_IN_TO_VOTE_MESSAGE };
+  }
+
+  return { kind: "eligible", existingVoteItemId };
+}
+
+/**
  * Determines what `/brackets/[id]` should show: the one active matchup to
  * vote on, or an explanatory status message when there isn't one right now.
  * See this file's top comment for the full reasoning.
@@ -108,7 +164,7 @@ export function determineVotingState(
 
   const votableMatchup = activeRound.matchups.find(
     (matchup) =>
-      (matchup.status === "ACTIVE" || matchup.status === "TIE_BREAKER") &&
+      isVotableMatchupStatus(matchup.status) &&
       matchup.itemA !== null &&
       matchup.itemB !== null
   );
