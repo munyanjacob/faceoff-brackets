@@ -1,19 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Unit-level: `findExpiredRounds`/`evaluateRound` are mocked so this suite
-// can assert on the route's own orchestration (auth gate, "call
-// evaluateRound once per expired round", "one failure doesn't block the
-// rest", "no expired rounds is a safe no-op") without a live database.
-// End-to-end behaviour against real seeded data (round closes, matchups get
-// winnerItemId, next round created, a tie leaves the round ACTIVE) is
-// covered separately in route.integration.test.ts, the same split already
-// used by find-expired-rounds/evaluate-round's own test suites.
+// Unit-level: `findExpiredRounds`/`evaluateRound` (#27, step 1) and
+// `findExpiredTieBreakers`/`resolveTieBreaker` (#29, step 2) are all mocked
+// so this suite can assert on the route's own orchestration (auth gate,
+// "call evaluateRound once per expired round", "call resolveTieBreaker once
+// per expired tie-breaker", "one failure doesn't block the rest of either
+// step", "nothing expired in either step is a safe no-op") without a live
+// database. End-to-end behaviour against real seeded data (round closes,
+// matchups get winnerItemId, next round created, a tie leaves the round
+// ACTIVE, an expired tie-breaker resolves and closes its round) is covered
+// separately in route.integration.test.ts, the same split already used by
+// find-expired-rounds/evaluate-round's own test suites.
 const findExpiredRounds = vi.fn();
 const evaluateRound = vi.fn();
+const findExpiredTieBreakers = vi.fn();
+const resolveTieBreaker = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("@/lib/rounds/find-expired-rounds", () => ({ findExpiredRounds }));
 vi.mock("@/lib/rounds/evaluate-round", () => ({ evaluateRound }));
+vi.mock("@/lib/rounds/find-expired-tie-breakers", () => ({
+  findExpiredTieBreakers,
+}));
+vi.mock("@/lib/rounds/resolve-tie-breaker", () => ({ resolveTieBreaker }));
 
 const { GET } = await import("./route");
 
@@ -32,6 +41,8 @@ describe("GET /api/cron/advance-rounds", () => {
     process.env.CRON_SECRET = "test-cron-secret";
     findExpiredRounds.mockReset().mockResolvedValue([]);
     evaluateRound.mockReset().mockResolvedValue(undefined);
+    findExpiredTieBreakers.mockReset().mockResolvedValue([]);
+    resolveTieBreaker.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -80,20 +91,24 @@ describe("GET /api/cron/advance-rounds", () => {
     expect(response.status).toBe(401);
   });
 
-  it("does not look up expired rounds when unauthorized", async () => {
+  it("does not look up expired rounds or tie-breakers when unauthorized", async () => {
     await GET(requestWithAuth());
 
     expect(findExpiredRounds).not.toHaveBeenCalled();
     expect(evaluateRound).not.toHaveBeenCalled();
+    expect(findExpiredTieBreakers).not.toHaveBeenCalled();
+    expect(resolveTieBreaker).not.toHaveBeenCalled();
   });
 
-  it("is a safe no-op (still 200) when nothing has expired", async () => {
+  it("is a safe no-op (still 200) when nothing has expired in either step", async () => {
     findExpiredRounds.mockResolvedValue([]);
+    findExpiredTieBreakers.mockResolvedValue([]);
 
     const response = await GET(requestWithAuth("Bearer test-cron-secret"));
 
     expect(response.status).toBe(200);
     expect(evaluateRound).not.toHaveBeenCalled();
+    expect(resolveTieBreaker).not.toHaveBeenCalled();
   });
 
   it("calls evaluateRound once per expired round returned by findExpiredRounds", async () => {
@@ -135,5 +150,76 @@ describe("GET /api/cron/advance-rounds", () => {
     expect(consoleError).toHaveBeenCalled();
 
     consoleError.mockRestore();
+  });
+
+  it("calls resolveTieBreaker once per expired tie-breaker returned by findExpiredTieBreakers, after step 1", async () => {
+    findExpiredRounds.mockResolvedValue([{ id: "round-1" }]);
+    findExpiredTieBreakers.mockResolvedValue([
+      { id: "matchup-1" },
+      { id: "matchup-2" },
+    ]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).toHaveBeenCalledTimes(1);
+    expect(resolveTieBreaker).toHaveBeenCalledTimes(2);
+    expect(resolveTieBreaker).toHaveBeenNthCalledWith(1, "matchup-1");
+    expect(resolveTieBreaker).toHaveBeenNthCalledWith(2, "matchup-2");
+  });
+
+  it("runs step 2 (tie-breakers) even when step 1 (rounds) found nothing expired", async () => {
+    findExpiredRounds.mockResolvedValue([]);
+    findExpiredTieBreakers.mockResolvedValue([{ id: "matchup-1" }]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).not.toHaveBeenCalled();
+    expect(resolveTieBreaker).toHaveBeenCalledTimes(1);
+    expect(resolveTieBreaker).toHaveBeenCalledWith("matchup-1");
+  });
+
+  it("logs and continues when one matchup's resolveTieBreaker rejects, still resolving the rest and returning 200", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    findExpiredTieBreakers.mockResolvedValue([
+      { id: "bad-matchup" },
+      { id: "good-matchup" },
+    ]);
+    resolveTieBreaker.mockImplementation(async (matchupId: string) => {
+      if (matchupId === "bad-matchup") {
+        throw new Error("boom");
+      }
+    });
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(resolveTieBreaker).toHaveBeenCalledTimes(2);
+    expect(resolveTieBreaker).toHaveBeenCalledWith("bad-matchup");
+    expect(resolveTieBreaker).toHaveBeenCalledWith("good-matchup");
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+
+  it("reports counts for both steps in the JSON response", async () => {
+    findExpiredRounds.mockResolvedValue([{ id: "round-1" }]);
+    findExpiredTieBreakers.mockResolvedValue([{ id: "matchup-1" }]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+    const body = await response.json();
+
+    expect(body).toEqual({
+      ok: true,
+      expired: 1,
+      evaluated: 1,
+      failed: 0,
+      expiredTieBreakers: 1,
+      tieBreakersResolved: 1,
+      tieBreakersFailed: 0,
+    });
   });
 });
