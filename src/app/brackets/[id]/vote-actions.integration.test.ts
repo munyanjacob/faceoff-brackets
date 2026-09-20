@@ -18,6 +18,12 @@ import { signAnonymousVoterId, verifyAnonymousVoterId } from "./voter-identity";
 // throw; this one gets the genuine one from Postgres.
 let currentUserId: string | undefined;
 
+function formDataWithComment(comment: string): FormData {
+  const formData = new FormData();
+  formData.set("comment", comment);
+  return formData;
+}
+
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({
     auth: {
@@ -92,14 +98,28 @@ describe.runIf(hasLiveDatabase)(
     let rateLimitMatchupIds: string[];
     let rateLimitItemAId: string;
     let rateLimitExtraMatchupId: string;
+    let commentMatchupId: string;
+    let commentItemAId: string;
+    let noCommentMatchupId: string;
+    let noCommentItemAId: string;
+    let tooLongCommentMatchupId: string;
+    let tooLongCommentItemAId: string;
 
     let RATE_LIMIT_ERROR: typeof import("./vote-actions").RATE_LIMIT_ERROR;
     let VOTE_RATE_LIMIT_MAX_VOTES: typeof import("./vote-actions").VOTE_RATE_LIMIT_MAX_VOTES;
+    let MAX_COMMENT_LENGTH: typeof import("./vote-actions").MAX_COMMENT_LENGTH;
+    let COMMENT_TOO_LONG_ERROR: typeof import("./vote-actions").COMMENT_TOO_LONG_ERROR;
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ castVote, initialVoteFormState, RATE_LIMIT_ERROR, VOTE_RATE_LIMIT_MAX_VOTES } =
-        await import("./vote-actions"));
+      ({
+        castVote,
+        initialVoteFormState,
+        RATE_LIMIT_ERROR,
+        VOTE_RATE_LIMIT_MAX_VOTES,
+        MAX_COMMENT_LENGTH,
+        COMMENT_TOO_LONG_ERROR,
+      } = await import("./vote-actions"));
 
       await prisma.profile.createMany({
         data: [
@@ -225,6 +245,44 @@ describe.runIf(hasLiveDatabase)(
       duplicateTestMatchupId = duplicateTestMatchup.id;
       duplicateTestItemAId = anonymousItems[6].id;
       duplicateTestItemBId = anonymousItems[7].id;
+
+      // Bracket 1b: ANONYMOUS_ALLOWED, three more items/matchups dedicated
+      // to issue #23's comment tests, kept separate from the matchups above
+      // so a comment-test vote never collides with another test's unique
+      // (matchupId, identity) constraint.
+      const commentItems = await makeItems(anonymousBracketId, 6);
+      const commentMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: commentItems[0].id,
+          itemBId: commentItems[1].id,
+          status: "ACTIVE",
+        },
+      });
+      commentMatchupId = commentMatchup.id;
+      commentItemAId = commentItems[0].id;
+
+      const noCommentMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: commentItems[2].id,
+          itemBId: commentItems[3].id,
+          status: "ACTIVE",
+        },
+      });
+      noCommentMatchupId = noCommentMatchup.id;
+      noCommentItemAId = commentItems[2].id;
+
+      const tooLongCommentMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: commentItems[4].id,
+          itemBId: commentItems[5].id,
+          status: "ACTIVE",
+        },
+      });
+      tooLongCommentMatchupId = tooLongCommentMatchup.id;
+      tooLongCommentItemAId = commentItems[4].id;
 
       // Bracket 2: ACCOUNT_REQUIRED, one ACTIVE matchup.
       const accountRequiredBracketId = await makeBracket(
@@ -493,6 +551,61 @@ describe.runIf(hasLiveDatabase)(
         where: { matchupId: rateLimitExtraMatchupId },
       });
       expect(vote).toBeNull();
+    });
+
+    describe("optional comment (issue #23)", () => {
+      it("saves a comment on the Vote row when one is provided", async () => {
+        const result = await castVote(
+          commentMatchupId,
+          commentItemAId,
+          initialVoteFormState,
+          formDataWithComment("Loved this one!")
+        );
+
+        expect(result).toEqual({ error: null, votedItemId: commentItemAId });
+
+        const vote = await prisma.vote.findFirst({
+          where: { matchupId: commentMatchupId },
+        });
+        expect(vote?.comment).toBe("Loved this one!");
+      });
+
+      it("saves comment = null when no comment is given - a comment is never required", async () => {
+        const result = await castVote(
+          noCommentMatchupId,
+          noCommentItemAId,
+          initialVoteFormState,
+          new FormData()
+        );
+
+        expect(result).toEqual({ error: null, votedItemId: noCommentItemAId });
+
+        const vote = await prisma.vote.findFirst({
+          where: { matchupId: noCommentMatchupId },
+        });
+        expect(vote?.comment).toBeNull();
+      });
+
+      it("rejects a comment over MAX_COMMENT_LENGTH and creates no Vote at all", async () => {
+        const tooLongComment = "a".repeat(MAX_COMMENT_LENGTH + 1);
+
+        const result = await castVote(
+          tooLongCommentMatchupId,
+          tooLongCommentItemAId,
+          initialVoteFormState,
+          formDataWithComment(tooLongComment)
+        );
+
+        expect(result).toEqual({
+          error: COMMENT_TOO_LONG_ERROR,
+          votedItemId: null,
+        });
+
+        const vote = await prisma.vote.findFirst({
+          where: { matchupId: tooLongCommentMatchupId },
+        });
+        expect(vote).toBeNull();
+      });
     });
   }
 );
