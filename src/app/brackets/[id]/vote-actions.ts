@@ -10,6 +10,8 @@ import { isVotableMatchupStatus } from "./voting-view-model";
 import {
   ANONYMOUS_VOTER_COOKIE,
   ANONYMOUS_VOTER_COOKIE_MAX_AGE_SECONDS,
+  signAnonymousVoterId,
+  verifyAnonymousVoterId,
   type VoterLookupKey,
 } from "./voter-identity";
 
@@ -48,6 +50,40 @@ export const MATCHUP_NOT_VOTABLE_ERROR =
   "Voting isn't open for this matchup.";
 export const INVALID_ITEM_ERROR = "That's not a valid choice for this matchup.";
 export const MATCHUP_NOT_FOUND_ERROR = "This matchup no longer exists.";
+export const RATE_LIMIT_ERROR =
+  "You've cast a lot of votes very quickly - please wait a few minutes and try again.";
+
+/**
+ * Basic anti-abuse rate limit (issue #35). Caps how many `Vote` rows a
+ * single voter identifier - signed-in `userId` or anonymous
+ * `anonymousVoterIdentifier`, i.e. `VoterLookupKey` below - can create
+ * within a rolling window, counted directly against the `Vote` table
+ * (`prisma.vote.count`) rather than an external rate-limiting
+ * library/service: AGENTS.md pins this project's dependencies and forbids
+ * adding one without asking, and the `Vote.createdAt` column already gives
+ * us everything a simple rolling-window count needs.
+ *
+ * Chosen threshold: 20 votes per identifier per rolling 10-minute window.
+ * Reasoning (stated here and in the #35 issue comment/commit):
+ *   - Generous for real usage: hitting 20 votes in 10 minutes means a
+ *     distinct, deliberate matchup vote roughly every 30 seconds sustained
+ *     for a full 10 minutes - well beyond "a handful of votes across
+ *     different matchups/brackets in a session". A real voter casually
+ *     browsing several brackets is never blocked.
+ *   - Still meaningful against scripted abuse: a script trying to skew many
+ *     matchups by voting through them in a tight loop is capped at 20
+ *     inserts per 10 minutes (120/hour at best even retrying constantly),
+ *     which meaningfully blunts a casual scripted attack without needing
+ *     it to be airtight - this app is explicitly "casual polling, not
+ *     election-grade" (`_docs/outdated/plan.md` SS7).
+ *   - Does not, and per #35 is not meant to, stop an attacker who clears
+ *     cookies between batches to get a fresh identifier - that reset is
+ *     explicitly accepted as out of scope (it's inherent to a
+ *     cookie-identifier approach; #35 only closes the *tamper* gap via
+ *     cookie signing, not the *reset* gap).
+ */
+export const VOTE_RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+export const VOTE_RATE_LIMIT_MAX_VOTES = 20;
 
 export async function castVote(
   matchupId: string,
@@ -94,17 +130,28 @@ export async function castVote(
     return { error: SIGN_IN_TO_VOTE_ERROR, votedItemId: null };
   } else {
     const cookieStore = await cookies();
-    let anonymousVoterIdentifier = cookieStore.get(
-      ANONYMOUS_VOTER_COOKIE
-    )?.value;
+    const rawCookieValue = cookieStore.get(ANONYMOUS_VOTER_COOKIE)?.value;
+    // Verifies the signature (issue #35), not just reads the value - a
+    // missing cookie *and* a present-but-tampered/invalid-signature one
+    // both fall through to minting a fresh, freshly-signed id below. See
+    // `verifyAnonymousVoterId`'s comment in `./voter-identity.ts` for why
+    // that's the right behavior for a hand-edited or pre-#35 unsigned
+    // cookie alike.
+    let anonymousVoterIdentifier = rawCookieValue
+      ? verifyAnonymousVoterId(rawCookieValue)
+      : null;
     if (!anonymousVoterIdentifier) {
       anonymousVoterIdentifier = randomUUID();
-      cookieStore.set(ANONYMOUS_VOTER_COOKIE, anonymousVoterIdentifier, {
-        httpOnly: true,
-        sameSite: "lax",
-        maxAge: ANONYMOUS_VOTER_COOKIE_MAX_AGE_SECONDS,
-        path: "/",
-      });
+      cookieStore.set(
+        ANONYMOUS_VOTER_COOKIE,
+        signAnonymousVoterId(anonymousVoterIdentifier),
+        {
+          httpOnly: true,
+          sameSite: "lax",
+          maxAge: ANONYMOUS_VOTER_COOKIE_MAX_AGE_SECONDS,
+          path: "/",
+        }
+      );
     }
     voterKey = { anonymousVoterIdentifier };
   }
@@ -119,6 +166,19 @@ export async function castVote(
   });
   if (existingVote) {
     return { error: null, votedItemId: existingVote.itemId };
+  }
+
+  // Rate limit (issue #35) - only reached once we know this would be a
+  // *new* Vote insert, so repeatedly re-submitting an already-voted
+  // matchup (short-circuited above) never counts against it.
+  const recentVoteCount = await prisma.vote.count({
+    where: {
+      ...voterKey,
+      createdAt: { gte: new Date(Date.now() - VOTE_RATE_LIMIT_WINDOW_MS) },
+    },
+  });
+  if (recentVoteCount >= VOTE_RATE_LIMIT_MAX_VOTES) {
+    return { error: RATE_LIMIT_ERROR, votedItemId: null };
   }
 
   try {

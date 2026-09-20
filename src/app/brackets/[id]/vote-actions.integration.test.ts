@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { signAnonymousVoterId, verifyAnonymousVoterId } from "./voter-identity";
 
 // Exercises issue #22's `castVote` Server Action end-to-end against the
 // real, disposable Supabase/Postgres project configured in `.env.local`:
@@ -88,10 +89,17 @@ describe.runIf(hasLiveDatabase)(
     let duplicateTestMatchupId: string;
     let duplicateTestItemAId: string;
     let duplicateTestItemBId: string;
+    let rateLimitMatchupIds: string[];
+    let rateLimitItemAId: string;
+    let rateLimitExtraMatchupId: string;
+
+    let RATE_LIMIT_ERROR: typeof import("./vote-actions").RATE_LIMIT_ERROR;
+    let VOTE_RATE_LIMIT_MAX_VOTES: typeof import("./vote-actions").VOTE_RATE_LIMIT_MAX_VOTES;
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ castVote, initialVoteFormState } = await import("./vote-actions"));
+      ({ castVote, initialVoteFormState, RATE_LIMIT_ERROR, VOTE_RATE_LIMIT_MAX_VOTES } =
+        await import("./vote-actions"));
 
       await prisma.profile.createMany({
         data: [
@@ -244,6 +252,50 @@ describe.runIf(hasLiveDatabase)(
       });
       accountRequiredMatchupId = accountRequiredMatchup.id;
       accountRequiredItemAId = accountRequiredItems[0].id;
+
+      // Bracket 3: ANONYMOUS_ALLOWED, `VOTE_RATE_LIMIT_MAX_VOTES` distinct
+      // ACTIVE matchups sharing one item pair (nothing stops multiple
+      // Matchups from referencing the same BracketItems), plus one extra
+      // matchup - enough to seed exactly-at-the-cap real `Vote` rows and
+      // then prove issue #35's `prisma.vote.count` rate limit rejects the
+      // next one, against genuine Postgres counting rather than a mock.
+      const rateLimitBracketId = await makeBracket(
+        "Vote e2e - rate limit",
+        "ANONYMOUS_ALLOWED"
+      );
+      const rateLimitItems = await makeItems(rateLimitBracketId, 2);
+      rateLimitItemAId = rateLimitItems[0].id;
+      const rateLimitRound = await prisma.round.create({
+        data: {
+          bracketId: rateLimitBracketId,
+          roundNumber: 1,
+          durationMinutes: 60,
+          status: "ACTIVE",
+          startsAt: new Date(),
+          endsAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      rateLimitMatchupIds = [];
+      for (let i = 0; i < VOTE_RATE_LIMIT_MAX_VOTES; i++) {
+        const matchup = await prisma.matchup.create({
+          data: {
+            roundId: rateLimitRound.id,
+            itemAId: rateLimitItems[0].id,
+            itemBId: rateLimitItems[1].id,
+            status: "ACTIVE",
+          },
+        });
+        rateLimitMatchupIds.push(matchup.id);
+      }
+      const rateLimitExtraMatchup = await prisma.matchup.create({
+        data: {
+          roundId: rateLimitRound.id,
+          itemAId: rateLimitItems[0].id,
+          itemBId: rateLimitItems[1].id,
+          status: "ACTIVE",
+        },
+      });
+      rateLimitExtraMatchupId = rateLimitExtraMatchup.id;
     });
 
     beforeEach(() => {
@@ -299,12 +351,19 @@ describe.runIf(hasLiveDatabase)(
       );
 
       expect(result).toEqual({ error: null, votedItemId: activeMatchupItemBId });
-      expect(cookieJar.get("voter_id")).toBeDefined();
+      const signedCookieValue = cookieJar.get("voter_id");
+      expect(signedCookieValue).toBeDefined();
+
+      // The cookie stores the *signed* value (issue #35) - `Vote.
+      // anonymousVoterIdentifier` stores the raw id, so verify the cookie
+      // to recover it, the same way `castVote`/`currentVoterLookupKey` do.
+      const rawIdentifier = verifyAnonymousVoterId(signedCookieValue!);
+      expect(rawIdentifier).not.toBeNull();
 
       const vote = await prisma.vote.findFirst({
         where: {
           matchupId: activeMatchupId,
-          anonymousVoterIdentifier: cookieJar.get("voter_id"),
+          anonymousVoterIdentifier: rawIdentifier,
         },
       });
       expect(vote).not.toBeNull();
@@ -400,6 +459,40 @@ describe.runIf(hasLiveDatabase)(
         where: { matchupId: tieBreakerMatchupId },
       });
       expect(vote).not.toBeNull();
+    });
+
+    it("rejects a vote once an anonymous identifier already has VOTE_RATE_LIMIT_MAX_VOTES recent Votes, against real Postgres counting (issue #35)", async () => {
+      const anonymousVoterIdentifier = randomUUID();
+      const signedCookieValue = signAnonymousVoterId(anonymousVoterIdentifier);
+
+      // Seed exactly-at-the-cap real Vote rows for this identifier, one per
+      // distinct rate-limit matchup - proves the rejection below comes from
+      // `prisma.vote.count`'s real rolling-window query, not a mock.
+      await prisma.vote.createMany({
+        data: rateLimitMatchupIds.map((matchupId) => ({
+          matchupId,
+          itemId: rateLimitItemAId,
+          anonymousVoterIdentifier,
+        })),
+      });
+
+      // Simulate the voter already holding a validly signed cookie for
+      // this identifier (as `castVote` would have set on an earlier vote).
+      cookieJar.set("voter_id", signedCookieValue);
+
+      const result = await castVote(
+        rateLimitExtraMatchupId,
+        rateLimitItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: RATE_LIMIT_ERROR, votedItemId: null });
+
+      const vote = await prisma.vote.findFirst({
+        where: { matchupId: rateLimitExtraMatchupId },
+      });
+      expect(vote).toBeNull();
     });
   }
 );
