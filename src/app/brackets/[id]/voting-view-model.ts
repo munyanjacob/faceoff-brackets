@@ -213,6 +213,22 @@ export type VoterContext =
 
 export const SIGN_IN_TO_VOTE_MESSAGE = "Sign in to vote on this bracket.";
 
+/**
+ * Issue #24's live-results data: a matchup's two items' current vote
+ * tallies, keyed by `VotingItem.id`. Deliberately just a plain
+ * `Record<string, number>`, not a richer shape - `./matchup-voting.tsx`'s
+ * `VoteControl` only ever needs "how many votes does *this* item have" for
+ * whichever item it's currently rendering.
+ *
+ * Only ever populated by `./matchups/[matchupId]/page.tsx` when
+ * `VoterContext.existingVoteItemId` is non-null (the voter has already
+ * voted on this matchup) - see that file's top comment for why counts are
+ * never even fetched otherwise, matching the issue's "a voter who hasn't
+ * voted never sees vote counts" criterion at the data layer, not just the
+ * rendering layer.
+ */
+export type VoteCounts = Record<string, number>;
+
 export function determineVoterContext(
   votingRequirement: string,
   isSignedIn: boolean,

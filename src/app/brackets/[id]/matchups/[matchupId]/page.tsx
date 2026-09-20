@@ -5,6 +5,7 @@ import { MatchupVoting } from "../../matchup-voting";
 import {
   determineMatchupVotingState,
   determineVoterContext,
+  type VoteCounts,
   type VoterContext,
 } from "../../voting-view-model";
 import { currentVoterLookupKey } from "../../voter-identity";
@@ -35,6 +36,24 @@ import { currentVoterLookupKey } from "../../voter-identity";
  * - `voterContext` (and its `Vote` lookup) is only ever computed when
  *   there's an actual matchup to vote on - skipped for the not-started/
  *   between-rounds/completed/not-found cases below, none of which need it.
+ *
+ * Issue #24's live results: once `voterContext.existingVoteItemId` comes
+ * back non-null (this voter already voted here, whether just now or on an
+ * earlier visit), this page also counts up current `Vote` rows for both of
+ * the matchup's items (`prisma.vote.count`, one query per item) and passes
+ * them down as `voteCounts` for `../../matchup-voting.tsx`'s `VoteControl`
+ * to render. Deliberately gated behind the same `existingVoteItemId` check
+ * that already decides "show their choice instead of a Vote button" -
+ * matches the issue's "a voter who hasn't voted never sees vote counts"
+ * criterion at the data layer (no query at all), not just by withholding it
+ * from what's rendered. No caching to worry about: this is a plain Prisma
+ * query, not a Next.js `fetch`/`"use cache"` call, so it always reads
+ * current rows - freshness on a plain refresh comes for free, and
+ * `../../vote-actions.ts`'s `revalidatePath` calls (unchanged by this
+ * issue) are what make the *same* single round-trip that casts a vote also
+ * re-run this query with the new vote already counted (see that file's and
+ * `../../vote-button.tsx`'s comments on Next.js's single-response Server
+ * Action model).
  *
  * Bracket-level unavailability (not started, completed, between rounds)
  * renders the same status message `../../page.tsx` shows for those cases -
@@ -76,6 +95,7 @@ export default async function BracketMatchupVotingPage({
   }
 
   let voterContext: VoterContext = { kind: "eligible", existingVoteItemId: null };
+  let voteCounts: VoteCounts | null = null;
   if (votingState.kind === "matchup") {
     const supabase = await createClient();
     const {
@@ -96,6 +116,33 @@ export default async function BracketMatchupVotingPage({
       Boolean(user),
       existingVoteItemId
     );
+
+    // Issue #24: only ever fetched once we know the voter has already
+    // voted here - see this file's top comment. `itemA`/`itemB` are
+    // guaranteed non-null by `determineMatchupVotingState`'s own
+    // `isVotableAndComplete` filter before a `{ kind: "matchup" }` state is
+    // produced (same guarantee `../../matchup-voting.tsx`'s `MatchupPanel`
+    // relies on); the null check here is only defensive type-narrowing.
+    const { matchup } = votingState;
+    if (
+      voterContext.kind === "eligible" &&
+      voterContext.existingVoteItemId &&
+      matchup.itemA &&
+      matchup.itemB
+    ) {
+      const [itemACount, itemBCount] = await Promise.all([
+        prisma.vote.count({
+          where: { matchupId: matchup.id, itemId: matchup.itemA.id },
+        }),
+        prisma.vote.count({
+          where: { matchupId: matchup.id, itemId: matchup.itemB.id },
+        }),
+      ]);
+      voteCounts = {
+        [matchup.itemA.id]: itemACount,
+        [matchup.itemB.id]: itemBCount,
+      };
+    }
   }
 
   // Called directly as a plain function, not as a `<MatchupVoting ... />`
@@ -108,5 +155,6 @@ export default async function BracketMatchupVotingPage({
     bracketId: id,
     votingState,
     voterContext,
+    voteCounts,
   });
 }
