@@ -127,8 +127,23 @@ export default async function BracketMatchupVotingPage({
     const lookupKey = await currentVoterLookupKey(user?.id ?? null);
     let existingVoteItemId: string | null = null;
     if (lookupKey) {
+      // Issue #41: scoped by the same current-phase rule
+      // `../../vote-actions.ts`'s `castVote` uses (TIE_BREAKER matchup
+      // status -> phase TIE_BREAKER, otherwise ORIGINAL) - reusing
+      // `votingState.isTieBreaker`, which `determineMatchupVotingState`
+      // already derived from this exact same `matchup.status` check, so
+      // there's only one place that mapping is written. Without this, a
+      // voter who voted during the original round would still see "Your
+      // vote: X" and no vote button once the matchup enters TIE_BREAKER,
+      // even though castVote would now accept their new vote - the vote
+      // button's visibility must never disagree with what a submit would
+      // actually do.
       const existingVote = await prisma.vote.findFirst({
-        where: { matchupId: votingState.matchup.id, ...lookupKey },
+        where: {
+          matchupId: votingState.matchup.id,
+          phase: votingState.isTieBreaker ? "TIE_BREAKER" : "ORIGINAL",
+          ...lookupKey,
+        },
       });
       existingVoteItemId = existingVote?.itemId ?? null;
     }

@@ -289,7 +289,7 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
     expect(html).not.toContain("Sign in to vote");
     expect((html.match(/"matchupId":"m1"/g) ?? []).length).toBe(2);
     expect(voteFindFirst).toHaveBeenCalledWith({
-      where: { matchupId: "m1", userId: "voter-1" },
+      where: { matchupId: "m1", phase: "ORIGINAL", userId: "voter-1" },
     });
   });
 
@@ -453,7 +453,7 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
     await BracketMatchupVotingPage({ params: params("b1", "m1") });
 
     expect(voteFindFirst).toHaveBeenCalledWith({
-      where: { matchupId: "m1", userId: "voter-1" },
+      where: { matchupId: "m1", phase: "ORIGINAL", userId: "voter-1" },
     });
   });
 
@@ -542,6 +542,74 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
       const html = JSON.stringify(result);
 
       expect(html).not.toContain('"endsAt"');
+    });
+  });
+
+  describe("issue #41: existing-vote lookup scoped by phase", () => {
+    it("scopes the existing-vote lookup to the TIE_BREAKER phase for a TIE_BREAKER matchup", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("TIE_BREAKER"),
+      });
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+
+      await BracketMatchupVotingPage({ params: params("b1", "m1") });
+
+      expect(voteFindFirst).toHaveBeenCalledWith({
+        where: { matchupId: "m1", phase: "TIE_BREAKER", userId: "voter-1" },
+      });
+    });
+
+    it("shows the vote button/form again (not 'Your vote') for an original-round voter once the matchup reflects TIE_BREAKER, since their ORIGINAL-phase vote doesn't satisfy the TIE_BREAKER-scoped lookup", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("TIE_BREAKER"),
+      });
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+      // No TIE_BREAKER-phase vote for this voter yet, even though they have
+      // an ORIGINAL-phase one from earlier in the round - the phase-scoped
+      // lookup finds nothing, matching what castVote itself would now
+      // accept a new vote for.
+      voteFindFirst.mockResolvedValue(null);
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).not.toContain("Your vote");
+      expect((html.match(/"matchupId":"m1"/g) ?? []).length).toBe(2);
+    });
+
+    it("still shows the voter's existing choice for a TIE_BREAKER matchup once they've voted in that phase", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("TIE_BREAKER"),
+      });
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+      voteFindFirst.mockResolvedValue({ id: "vote-tb", itemId: "item-b" });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain("Your vote");
+      expect(html).not.toContain('"matchupId"');
     });
   });
 
