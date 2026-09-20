@@ -18,6 +18,91 @@ Chosen from the options evaluated for `_docs/plan.md`:
 
 Versions above reflect latest-stable as of September 2026 (verified via web search); re-check before scaffolding if this doc is acted on much later.
 
+## Lint tooling: isolated TypeScript 6 shim for `typescript-eslint` (issue #39)
+
+`typescript-eslint` (and `eslint-config-next`, which loads it unconditionally)
+is built against the classic TypeScript <6.1 Compiler API
+(`ts.createProgram`, `ts.SyntaxKind`, etc). `typescript@7.0.2` - the version
+pinned above - no longer exports that API at all; its `exports` map only
+exposes the new `./unstable/*` native-compiler entry points. As of September
+2026, no published or canary `typescript-eslint`/`eslint-config-next`
+supports TS 7 (tracked upstream in
+[typescript-eslint#10940](https://github.com/typescript-eslint/typescript-eslint/issues/10940),
+still unmerged), so with `typescript@^7.0.2` installed, `npm run lint`
+couldn't even load `eslint-config-next` - not just its TypeScript-specific
+rules, but the React/hooks/accessibility/Next rules too.
+
+Two approaches were tried and rejected before landing on the fix below:
+
+1. **npm `overrides` scoped to the lint subtree.** Doesn't work: `typescript`
+   is declared exclusively as a `peerDependencies` entry throughout the
+   `typescript-eslint`/`@typescript-eslint/*` family, and npm's `overrides`
+   applied to a peer-only edge only rewrites the compatibility check, not
+   the physical install - `require('typescript')` inside `typescript-eslint`
+   still resolved to the one hoisted `typescript@7.0.2` regardless.
+2. **A global npm alias swap** (`"typescript": "npm:@typescript/typescript6@^6.0.2"`,
+   with the real compiler aliased to `"@typescript/native"`). This does fix
+   lint, but was proven - by calling Next's own
+   `getTypeScriptPackageInfo()` (`next/dist/lib/typescript/runTypeScriptCli.js`)
+   after the swap - to also divert `next build`'s internal type-check onto
+   TS 6.0.2 instead of the pinned 7.0.2. Rejected as a silent version
+   discrepancy in the build path.
+
+### The fix: a lint-process-only `require('typescript')` redirect
+
+- `@typescript/typescript6` (Microsoft's own published TS-6-API
+  compatibility package - real, on npm, re-exports the classic Compiler
+  API) is a normal devDependency. **The `typescript` entry in
+  `package.json` is untouched** - real `typescript@7.0.2` is still the only
+  thing the bare `typescript` module name resolves to, everywhere, except
+  inside one specific process.
+- `scripts/lint-typescript-shim.cjs` is a Node `--require` preload script
+  that patches `Module._resolveFilename` for the lifetime of the process
+  it's loaded into. It computes the actual installed dependency closure of
+  `typescript-eslint`/`@typescript-eslint/*` (walking `dependencies`/
+  `peerDependencies`/`optionalDependencies` the way Node's own resolver
+  would, not by guessing from directory names - this is what correctly
+  catches sibling packages like `ts-api-utils`, which is hoisted to
+  top-level `node_modules` with no `typescript-eslint` in its path at all)
+  and redirects `require('typescript')`/`require('typescript/...')` to
+  `@typescript/typescript6` **only** for calls originating from inside that
+  closure. Every other `require('typescript')` call is untouched.
+- The `lint` script in `package.json` loads it explicitly:
+  `node --require ./scripts/lint-typescript-shim.cjs ./node_modules/eslint/bin/eslint.js .`.
+  This scopes the patch to the one `eslint` process; `next build`, `tsc`,
+  `npm test`, etc. never load this file and are completely unaffected.
+- Verified: `npm run lint` produces genuine findings (not a crash), and a
+  deliberately-introduced type-aware violation
+  (`@typescript-eslint/no-unsafe-assignment`, which requires a real
+  TypeScript type-checker, not just syntax parsing) was correctly flagged
+  and then removed - confirming `typescript-estree`'s project service
+  successfully builds a full type-checking program against the TS6 shim.
+
+### A second issue this surfaced: a `tsc` bin-name collision
+
+Adding `@typescript/typescript6` as a devDependency has a side effect worth
+recording: it depends on `@typescript/old` (an npm alias for real
+`typescript@6.x`), which is hoisted to top-level `node_modules` and
+declares the *same* bin name (`tsc`) as the pinned `typescript@7.0.2`.
+Empirically, right after `npm install`, npm's bin linker picked
+`@typescript/old`'s `tsc` to win the shared `node_modules/.bin/tsc` shim -
+silently pointing plain `npx tsc`/`tsc` at TypeScript 6.0.3 instead of the
+pinned 7.0.2. (This does *not* affect `next build`'s internal type-check -
+`getTypeScriptPackageInfo()` resolves the `typescript` package by module
+name and reads its `bin` field from its own package.json, never touching
+`node_modules/.bin` - but it does silently break direct `npx tsc` usage,
+which engineers use for ad-hoc type checks.)
+
+`scripts/fix-tsc-bin.cjs`, wired into `postinstall`
+(`"postinstall": "prisma generate && node scripts/fix-tsc-bin.cjs"`), fixes
+this deterministically after every `npm install`: it reads the real,
+pinned `typescript` package's own `bin` field and regenerates
+`node_modules/.bin/tsc{,.cmd,.ps1}` to point at it, regardless of which
+package's bin happened to win npm's internal linking race. Verified via a
+clean `rm -rf node_modules && npm install`: the postinstall hook ran
+automatically, and `npx tsc --version` / `npx tsc --noEmit` reported and
+type-checked against `7.0.2` afterward.
+
 ## Why these choices
 
 - Managed auth/DB/storage minimizes infrastructure to stand up and maintain, and keeps the whole app in one language (TypeScript).
