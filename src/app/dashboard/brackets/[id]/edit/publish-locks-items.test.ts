@@ -28,9 +28,11 @@ const bracketFindFirst = vi.fn();
 const bracketUpdate = vi.fn();
 const itemCount = vi.fn();
 const itemFindFirst = vi.fn();
+const itemFindMany = vi.fn();
 const itemCreate = vi.fn();
 const itemUpdate = vi.fn();
 const itemDelete = vi.fn();
+const roundCreate = vi.fn();
 const revalidatePath = vi.fn();
 const uploadBracketItemImage = vi.fn();
 
@@ -39,6 +41,8 @@ type BracketRecord = {
   creatorId: string;
   status: string;
   scheduledStartAt: Date | null;
+  defaultRoundDurationMinutes: number;
+  roundDurationOverrides: unknown;
 };
 
 let bracket: BracketRecord;
@@ -56,10 +60,22 @@ vi.mock("@/lib/prisma", () => ({
     bracketItem: {
       count: itemCount,
       findFirst: itemFindFirst,
+      findMany: itemFindMany,
       create: itemCreate,
       update: itemUpdate,
       delete: itemDelete,
     },
+    round: { create: roundCreate },
+    // Same shape as the real interactive transaction (#18): the callback
+    // gets a `tx` whose relevant methods are these same shared mocks, so
+    // `publishBracket`'s Round creation is visible to assertions below.
+    $transaction: vi.fn(
+      async (callback: (tx: unknown) => Promise<unknown>) =>
+        callback({
+          bracket: { update: bracketUpdate },
+          round: { create: roundCreate },
+        })
+    ),
   },
 }));
 
@@ -87,9 +103,11 @@ describe("publishing locks out #11's item actions for real, not just via a hidde
     bracketUpdate.mockReset();
     itemCount.mockReset();
     itemFindFirst.mockReset();
+    itemFindMany.mockReset();
     itemCreate.mockReset();
     itemUpdate.mockReset();
     itemDelete.mockReset();
+    roundCreate.mockReset();
     revalidatePath.mockReset();
     uploadBracketItemImage.mockReset();
 
@@ -103,6 +121,8 @@ describe("publishing locks out #11's item actions for real, not just via a hidde
       creatorId: "creator-1",
       status: "DRAFT",
       scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
     };
     items = [
       { id: "item-1", bracketId: "bracket-1" },
@@ -128,6 +148,7 @@ describe("publishing locks out #11's item actions for real, not just via a hidde
       }
     );
     itemCount.mockImplementation(async () => items.length);
+    itemFindMany.mockImplementation(async () => [...items]);
     itemFindFirst.mockImplementation(
       async ({ where }: { where: { id: string; bracketId: string } }) =>
         items.find(

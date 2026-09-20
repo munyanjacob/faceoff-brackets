@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { generateFirstRound } from "@/lib/bracket/generate-first-round";
 
 // Exercises issue #16's `publishBracket` Server Action end-to-end against
 // the real, disposable Supabase/Postgres project configured in
@@ -79,6 +80,7 @@ describe.runIf(hasLiveDatabase)(
     let otherCreatorBracketId: string;
     let alreadyActiveBracketId: string;
     let lockProofBracketId: string;
+    let overrideDurationBracketId: string;
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
@@ -108,7 +110,13 @@ describe.runIf(hasLiveDatabase)(
 
       async function makeDraftBracket(
         title: string,
-        opts: { scheduledStartAt?: Date; itemCount: number; creator?: string }
+        opts: {
+          scheduledStartAt?: Date;
+          itemCount: number;
+          creator?: string;
+          defaultRoundDurationMinutes?: number;
+          roundDurationOverrides?: Record<string, number>;
+        }
       ) {
         const created = await prisma.bracket.create({
           data: {
@@ -116,7 +124,8 @@ describe.runIf(hasLiveDatabase)(
             title,
             visibility: "PUBLIC",
             votingRequirement: "ANONYMOUS_ALLOWED",
-            defaultRoundDurationMinutes: 60,
+            defaultRoundDurationMinutes: opts.defaultRoundDurationMinutes ?? 60,
+            roundDurationOverrides: opts.roundDurationOverrides ?? undefined,
             status: "DRAFT",
             scheduledStartAt: opts.scheduledStartAt ?? null,
           },
@@ -153,6 +162,14 @@ describe.runIf(hasLiveDatabase)(
         "Lock Proof (publish e2e)",
         { itemCount: 2 }
       );
+      overrideDurationBracketId = await makeDraftBracket(
+        "Override Duration (publish e2e, #18)",
+        {
+          itemCount: 4,
+          defaultRoundDurationMinutes: 60,
+          roundDurationOverrides: { "1": 15 },
+        }
+      );
 
       const alreadyActiveBracket = await prisma.bracket.create({
         data: {
@@ -171,7 +188,14 @@ describe.runIf(hasLiveDatabase)(
     afterAll(async () => {
       // Delete children before parents (`onDelete: Restrict` throughout the
       // schema) so this suite never leaves test data behind in the one live
-      // database this project has.
+      // database this project has. `Matchup` rows (#18) reference both
+      // `Round` and `BracketItem`, so they must go before either.
+      await prisma.matchup.deleteMany({
+        where: { round: { bracketId: { in: bracketIds } } },
+      });
+      await prisma.round.deleteMany({
+        where: { bracketId: { in: bracketIds } },
+      });
       await prisma.bracketItem.deleteMany({
         where: { bracketId: { in: bracketIds } },
       });
@@ -182,26 +206,82 @@ describe.runIf(hasLiveDatabase)(
       await prisma.$disconnect();
     });
 
-    it("publishes to ACTIVE and sets publishedAt when the start choice was immediate", async () => {
+    // Issue #18: publishing must also create round 1's real `Round` and
+    // `Matchup` rows, in the exact ACTIVE/bye shape the issue specifies, and
+    // those pairings must match what the preview (#15's `generateFirstRound`
+    // call) would show for this same item list - proven here by calling
+    // `generateFirstRound` directly on the same items and cross-checking.
+    it("publishes to ACTIVE, sets publishedAt, and creates round 1's Round (ACTIVE) and Matchups (bye COMPLETED + real ACTIVE), matching the pairings generateFirstRound produces directly", async () => {
       currentUserId = creatorId;
       const before = new Date();
+
+      // `readyBracketId` has 3 items, seeded in creation order - same order
+      // publish itself reads them in (`orderBy: { createdAt: "asc" }`).
+      const items = await prisma.bracketItem.findMany({
+        where: { bracketId: readyBracketId },
+        orderBy: { createdAt: "asc" },
+      });
+      const expectedPairings = generateFirstRound(items);
 
       const result = await publishBracket(
         readyBracketId,
         initialPublishFormState,
         new FormData()
       );
-
       expect(result).toEqual({ error: null });
 
-      const updated = await prisma.bracket.findUnique({
+      const updatedBracket = await prisma.bracket.findUnique({
         where: { id: readyBracketId },
       });
-      expect(updated?.status).toBe("ACTIVE");
-      expect(updated?.publishedAt).not.toBeNull();
-      expect(updated!.publishedAt!.getTime()).toBeGreaterThanOrEqual(
+      expect(updatedBracket?.status).toBe("ACTIVE");
+      expect(updatedBracket?.publishedAt).not.toBeNull();
+      expect(updatedBracket!.publishedAt!.getTime()).toBeGreaterThanOrEqual(
         before.getTime()
       );
+
+      const rounds = await prisma.round.findMany({
+        where: { bracketId: readyBracketId },
+      });
+      expect(rounds).toHaveLength(1);
+      const round = rounds[0];
+      expect(round.roundNumber).toBe(1);
+      expect(round.durationMinutes).toBe(60); // this bracket's default, no override
+      expect(round.status).toBe("ACTIVE");
+      expect(round.startsAt).not.toBeNull();
+      expect(round.startsAt!.getTime()).toBeGreaterThanOrEqual(
+        before.getTime()
+      );
+      expect(round.endsAt).not.toBeNull();
+      expect(round.endsAt!.getTime() - round.startsAt!.getTime()).toBe(
+        60 * 60_000
+      );
+
+      const matchups = await prisma.matchup.findMany({
+        where: { roundId: round.id },
+      });
+      // 3 items -> next power of two is 4 -> 1 bye + 1 real matchup.
+      expect(matchups).toHaveLength(2);
+
+      const byeMatchup = matchups.find((m) => m.itemBId === null);
+      expect(byeMatchup).toBeDefined();
+      expect(byeMatchup!.winnerItemId).toBe(byeMatchup!.itemAId);
+      expect(byeMatchup!.status).toBe("COMPLETED");
+
+      const realMatchup = matchups.find((m) => m.itemBId !== null);
+      expect(realMatchup).toBeDefined();
+      expect(realMatchup!.status).toBe("ACTIVE");
+      expect(realMatchup!.winnerItemId).toBeNull();
+
+      // Cross-check: the persisted (itemA, itemB) pairs match exactly what
+      // generateFirstRound (#17) produces directly for the same item list -
+      // proving publish and the #15 preview can never drift apart.
+      const persistedPairs = matchups
+        .map((m) => [m.itemAId, m.itemBId] as const)
+        .sort((a, b) => (a[0]! < b[0]! ? -1 : 1));
+      const expectedPairs = expectedPairings
+        .map((p) => [p.itemA.id, p.itemB?.id ?? null] as const)
+        .sort((a, b) => (a[0]! < b[0]! ? -1 : 1));
+      expect(persistedPairs).toEqual(expectedPairs);
     });
 
     it("publishes to SCHEDULED when a future start time was chosen", async () => {
@@ -220,6 +300,58 @@ describe.runIf(hasLiveDatabase)(
       });
       expect(updated?.status).toBe("SCHEDULED");
       expect(updated?.publishedAt).not.toBeNull();
+
+      const rounds = await prisma.round.findMany({
+        where: { bracketId: scheduledReadyBracketId },
+      });
+      expect(rounds).toHaveLength(1);
+      const round = rounds[0];
+      expect(round.roundNumber).toBe(1);
+      expect(round.status).toBe("PENDING");
+      expect(round.startsAt).toBeNull();
+      expect(round.endsAt).toBeNull();
+
+      // 2 items -> 0 byes, 1 real matchup.
+      const matchups = await prisma.matchup.findMany({
+        where: { roundId: round.id },
+      });
+      expect(matchups).toHaveLength(1);
+      expect(matchups[0].status).toBe("PENDING");
+      expect(matchups[0].itemBId).not.toBeNull();
+      expect(matchups[0].winnerItemId).toBeNull();
+    });
+
+    it("uses Bracket.round_duration_overrides['1'] for round 1's duration, over the bracket's default", async () => {
+      currentUserId = creatorId;
+      const before = new Date();
+
+      const result = await publishBracket(
+        overrideDurationBracketId,
+        initialPublishFormState,
+        new FormData()
+      );
+      expect(result).toEqual({ error: null });
+
+      const round = await prisma.round.findFirst({
+        where: { bracketId: overrideDurationBracketId },
+      });
+      expect(round).not.toBeNull();
+      expect(round!.durationMinutes).toBe(15); // override, not the default 60
+      expect(round!.status).toBe("ACTIVE");
+      expect(round!.startsAt!.getTime()).toBeGreaterThanOrEqual(
+        before.getTime()
+      );
+      expect(round!.endsAt!.getTime() - round!.startsAt!.getTime()).toBe(
+        15 * 60_000
+      );
+
+      // 4 items -> 0 byes, 2 real matchups, both ACTIVE.
+      const matchups = await prisma.matchup.findMany({
+        where: { roundId: round!.id },
+      });
+      expect(matchups).toHaveLength(2);
+      expect(matchups.every((m) => m.status === "ACTIVE")).toBe(true);
+      expect(matchups.every((m) => m.itemBId !== null)).toBe(true);
     });
 
     it("blocks publishing with a clear message, not a server error, when there is only 1 item", async () => {
@@ -240,6 +372,11 @@ describe.runIf(hasLiveDatabase)(
       });
       expect(unchanged?.status).toBe("DRAFT");
       expect(unchanged?.publishedAt).toBeNull();
+
+      const rounds = await prisma.round.findMany({
+        where: { bracketId: tooFewItemsBracketId },
+      });
+      expect(rounds).toHaveLength(0);
     });
 
     it("blocks publishing with a clear message when there are 0 items", async () => {
