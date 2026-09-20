@@ -44,6 +44,17 @@ enum MatchupStatus {
   COMPLETED
 }
 
+// Issue #41: which voting window a Vote was cast in. A matchup can move
+// from ACTIVE straight into a TIE_BREAKER revote (see MatchupStatus above
+// and evaluateRound's tie-breaker branch); this lets the same voter cast
+// one vote per phase instead of being permanently locked to whichever
+// phase they voted in first - see Vote's @@unique constraints below, both
+// of which now include this column.
+enum VotePhase {
+  ORIGINAL
+  TIE_BREAKER
+}
+
 model Profile {
   id          String   @id
   email       String   @unique
@@ -131,19 +142,27 @@ model Matchup {
 }
 
 model Vote {
-  id                       String   @id @default(uuid())
-  matchupId                String   @map("matchup_id")
-  itemId                   String   @map("item_id")
-  userId                   String?  @map("user_id")
-  anonymousVoterIdentifier String?  @map("anonymous_voter_identifier")
+  id                       String    @id @default(uuid())
+  matchupId                String    @map("matchup_id")
+  itemId                   String    @map("item_id")
+  userId                   String?   @map("user_id")
+  anonymousVoterIdentifier String?   @map("anonymous_voter_identifier")
   comment                  String?
-  createdAt                DateTime @default(now()) @map("created_at")
+  // Issue #41: defaults every pre-existing row to ORIGINAL via the column
+  // default on migration - no historical Vote was ever cast during a
+  // tie-breaker before this shipped, so nothing needs reinterpreting.
+  phase                    VotePhase @default(ORIGINAL)
+  createdAt                DateTime  @default(now()) @map("created_at")
 
   matchup Matchup     @relation(fields: [matchupId], references: [id], onDelete: Restrict)
   item    BracketItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
   user    Profile?    @relation(fields: [userId], references: [id], onDelete: Restrict)
 
-  @@unique([matchupId, userId])
-  @@unique([matchupId, anonymousVoterIdentifier])
+  // Issue #41: scoped by phase, not just matchup+identity - a voter gets
+  // one vote per matchup *per phase*, so an original-round vote and a
+  // tie-breaker revote from the same identity coexist as two separate rows
+  // instead of colliding.
+  @@unique([matchupId, userId, phase])
+  @@unique([matchupId, anonymousVoterIdentifier, phase])
   @@map("votes")
 }

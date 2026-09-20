@@ -6,6 +6,7 @@ import {
   MatchupStatus,
   RoundStatus,
   Visibility,
+  VotePhase,
   VotingRequirement,
 } from "../src/generated/prisma/enums";
 
@@ -61,12 +62,17 @@ describe("prisma/schema.prisma", () => {
     expect(profileBlock?.[0]).toMatch(/id\s+String\s+@id\s*\n/);
   });
 
-  test("Vote has independent unique constraints for account and anonymous voters", () => {
+  test("Vote has independent unique constraints for account and anonymous voters, both scoped by phase (issue #41)", () => {
     const voteBlock = schemaSource.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? "";
-    expect(voteBlock).toContain("@@unique([matchupId, userId])");
+    expect(voteBlock).toContain("@@unique([matchupId, userId, phase])");
     expect(voteBlock).toContain(
-      "@@unique([matchupId, anonymousVoterIdentifier])",
+      "@@unique([matchupId, anonymousVoterIdentifier, phase])",
     );
+  });
+
+  test("Vote's phase column defaults to ORIGINAL (issue #41)", () => {
+    const voteBlock = schemaSource.match(/model Vote \{[\s\S]*?\n\}/)?.[0] ?? "";
+    expect(voteBlock).toMatch(/phase\s+VotePhase\s+@default\(ORIGINAL\)/);
   });
 
   test("BracketItem has a unique constraint on (bracketId, seed)", () => {
@@ -129,6 +135,13 @@ describe("generated Prisma Client enums", () => {
       ACTIVE: "ACTIVE",
       TIE_BREAKER: "TIE_BREAKER",
       COMPLETED: "COMPLETED",
+    });
+  });
+
+  test("VotePhase matches ORIGINAL/TIE_BREAKER (issue #41)", () => {
+    expect(VotePhase).toEqual({
+      ORIGINAL: "ORIGINAL",
+      TIE_BREAKER: "TIE_BREAKER",
     });
   });
 });
