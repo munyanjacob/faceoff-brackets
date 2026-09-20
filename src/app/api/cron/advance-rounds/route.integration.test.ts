@@ -122,16 +122,62 @@ describe.runIf(hasLiveDatabase)(
       return round;
     }
 
-    async function vote(matchupId: string, itemId: string, count: number) {
+    async function vote(
+      matchupId: string,
+      itemId: string,
+      count: number,
+      createdAt?: Date
+    ) {
       for (let i = 0; i < count; i++) {
         await prisma.vote.create({
           data: {
             matchupId,
             itemId,
             anonymousVoterIdentifier: randomUUID(),
+            ...(createdAt ? { createdAt } : {}),
           },
         });
       }
+    }
+
+    // #29: seeds a Matchup already sitting in TIE_BREAKER with an expired
+    // `tieBreakerEndsAt`, on a Round whose `durationMinutes` is `60` - so
+    // (matching evaluate-round.ts's formula) the tie-breaker window is
+    // `max(25% of 60, 60)` = 60 minutes, and `tieBreakerStartedAt` is
+    // exactly 60 minutes before `tieBreakerEndsAt`.
+    async function makeExpiredTieBreaker(
+      bracketId: string,
+      roundNumber: number,
+      itemAId: string,
+      itemBId: string
+    ) {
+      const now = Date.now();
+      const tieBreakerEndsAt = new Date(now - 60_000); // already expired
+      const tieBreakerStartedAt = new Date(
+        tieBreakerEndsAt.getTime() - 60 * 60_000
+      );
+      const round = await prisma.round.create({
+        data: {
+          bracketId,
+          roundNumber,
+          durationMinutes: 60,
+          startsAt: new Date(now - 3 * 60 * 60_000),
+          endsAt: new Date(now + 60 * 60_000), // round itself not expired
+          status: "ACTIVE",
+          matchups: {
+            create: [
+              {
+                itemAId,
+                itemBId,
+                status: "TIE_BREAKER",
+                tieBreakerEndsAt,
+              },
+            ],
+          },
+        },
+        include: { matchups: true },
+      });
+      return { round, matchup: round.matchups[0], tieBreakerStartedAt };
     }
 
     function authedRequest() {
@@ -268,6 +314,99 @@ describe.runIf(hasLiveDatabase)(
       const closedB = await prisma.round.findUnique({ where: { id: roundB.id } });
       expect(closedA?.status).toBe("COMPLETED");
       expect(closedB?.status).toBe("COMPLETED");
+    });
+
+    it("resolves an expired tie-breaker using only votes cast during the tie-breaker window, and closes the round around it", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - tie-breaker resolves",
+        2
+      );
+      const { round, matchup, tieBreakerStartedAt } =
+        await makeExpiredTieBreaker(bracket.id, 1, items[0].id, items[1].id);
+
+      // Votes cast during the original round, BEFORE the tie-breaker
+      // started - must be excluded from the tie-breaker tally. Heavily
+      // favors item B, so if these leaked into the tally item B would win
+      // instead of item A.
+      await vote(
+        matchup.id,
+        items[1].id,
+        5,
+        new Date(tieBreakerStartedAt.getTime() - 60_000)
+      );
+
+      // Votes cast during the tie-breaker window - item A decisively wins
+      // these.
+      await vote(
+        matchup.id,
+        items[0].id,
+        3,
+        new Date(tieBreakerStartedAt.getTime() + 60_000)
+      );
+      await vote(
+        matchup.id,
+        items[1].id,
+        1,
+        new Date(tieBreakerStartedAt.getTime() + 60_000)
+      );
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const resolvedMatchup = await prisma.matchup.findUnique({
+        where: { id: matchup.id },
+      });
+      expect(resolvedMatchup?.status).toBe("COMPLETED");
+      expect(resolvedMatchup?.winnerItemId).toBe(items[0].id);
+
+      // Resolving the only open matchup was the last thing blocking this
+      // (single-matchup) round from closing - evaluateRound should have
+      // been re-run and closed it, completing the bracket (only 2 items).
+      const closedRound = await prisma.round.findUnique({
+        where: { id: round.id },
+      });
+      expect(closedRound?.status).toBe("COMPLETED");
+
+      const closedBracket = await prisma.bracket.findUnique({
+        where: { id: bracket.id },
+      });
+      expect(closedBracket?.status).toBe("COMPLETED");
+    });
+
+    it("a tie-breaker that ties again still resolves to one of the two items (random fallback) rather than staying open", async () => {
+      const { bracket, items } = await makeBracket(
+        "Advance Rounds Route E2E - tie-breaker ties again",
+        2
+      );
+      const { matchup, tieBreakerStartedAt } = await makeExpiredTieBreaker(
+        bracket.id,
+        1,
+        items[0].id,
+        items[1].id
+      );
+      await vote(
+        matchup.id,
+        items[0].id,
+        2,
+        new Date(tieBreakerStartedAt.getTime() + 60_000)
+      );
+      await vote(
+        matchup.id,
+        items[1].id,
+        2,
+        new Date(tieBreakerStartedAt.getTime() + 60_000)
+      );
+
+      const response = await GET(authedRequest());
+      expect(response.status).toBe(200);
+
+      const resolvedMatchup = await prisma.matchup.findUnique({
+        where: { id: matchup.id },
+      });
+      expect(resolvedMatchup?.status).toBe("COMPLETED");
+      expect([items[0].id, items[1].id]).toContain(
+        resolvedMatchup?.winnerItemId
+      );
     });
 
     it("returns 401 and evaluates nothing when the bearer token is wrong", async () => {
