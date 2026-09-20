@@ -89,6 +89,33 @@ describe("/dashboard/brackets/[id]/edit page", () => {
     expect(html).toContain("Cheers");
   });
 
+  it("passes each item's imageUrl through to its row, so an uploaded image can render in the list (issue #12)", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      title: "Best Sitcom",
+      status: "DRAFT",
+    });
+    itemFindMany.mockResolvedValue([
+      {
+        id: "item-1",
+        title: "Seinfeld",
+        description: null,
+        imageUrl: "https://example.supabase.co/storage/v1/object/public/bracket-item-images/bracket-1/seinfeld.png",
+      },
+      { id: "item-2", title: "Cheers", description: null, imageUrl: null },
+    ]);
+
+    const result = await EditBracketPage({
+      params: Promise.resolve({ id: "bracket-1" }),
+      searchParams: Promise.resolve({}),
+    });
+
+    const html = JSON.stringify(result);
+    expect(html).toContain(
+      "https://example.supabase.co/storage/v1/object/public/bracket-item-images/bracket-1/seinfeld.png"
+    );
+  });
+
   it("renders an explicit empty state when the bracket has no items yet", async () => {
     bracketFindFirst.mockResolvedValue({
       id: "bracket-1",

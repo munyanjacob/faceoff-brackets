@@ -101,6 +101,7 @@ export default async function EditBracketPage({
                     id: item.id,
                     title: item.title,
                     description: item.description,
+                    imageUrl: item.imageUrl,
                   }}
                   isDraft={isDraft}
                 />
