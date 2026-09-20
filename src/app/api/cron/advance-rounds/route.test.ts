@@ -1,6 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GET } from "./route";
+// Unit-level: `findExpiredRounds`/`evaluateRound` are mocked so this suite
+// can assert on the route's own orchestration (auth gate, "call
+// evaluateRound once per expired round", "one failure doesn't block the
+// rest", "no expired rounds is a safe no-op") without a live database.
+// End-to-end behaviour against real seeded data (round closes, matchups get
+// winnerItemId, next round created, a tie leaves the round ACTIVE) is
+// covered separately in route.integration.test.ts, the same split already
+// used by find-expired-rounds/evaluate-round's own test suites.
+const findExpiredRounds = vi.fn();
+const evaluateRound = vi.fn();
+
+vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/rounds/find-expired-rounds", () => ({ findExpiredRounds }));
+vi.mock("@/lib/rounds/evaluate-round", () => ({ evaluateRound }));
+
+const { GET } = await import("./route");
 
 function requestWithAuth(authorization?: string) {
   const headers = new Headers();
@@ -15,6 +30,8 @@ describe("GET /api/cron/advance-rounds", () => {
 
   beforeEach(() => {
     process.env.CRON_SECRET = "test-cron-secret";
+    findExpiredRounds.mockReset().mockResolvedValue([]);
+    evaluateRound.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -61,5 +78,62 @@ describe("GET /api/cron/advance-rounds", () => {
     const response = await GET(requestWithAuth("Bearer undefined"));
 
     expect(response.status).toBe(401);
+  });
+
+  it("does not look up expired rounds when unauthorized", async () => {
+    await GET(requestWithAuth());
+
+    expect(findExpiredRounds).not.toHaveBeenCalled();
+    expect(evaluateRound).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op (still 200) when nothing has expired", async () => {
+    findExpiredRounds.mockResolvedValue([]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).not.toHaveBeenCalled();
+  });
+
+  it("calls evaluateRound once per expired round returned by findExpiredRounds", async () => {
+    findExpiredRounds.mockResolvedValue([
+      { id: "round-1" },
+      { id: "round-2" },
+      { id: "round-3" },
+    ]);
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).toHaveBeenCalledTimes(3);
+    expect(evaluateRound).toHaveBeenNthCalledWith(1, "round-1");
+    expect(evaluateRound).toHaveBeenNthCalledWith(2, "round-2");
+    expect(evaluateRound).toHaveBeenNthCalledWith(3, "round-3");
+  });
+
+  it("logs and continues when one round's evaluateRound rejects, still evaluating the rest and returning 200", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    findExpiredRounds.mockResolvedValue([
+      { id: "bad-round" },
+      { id: "good-round" },
+    ]);
+    evaluateRound.mockImplementation(async (roundId: string) => {
+      if (roundId === "bad-round") {
+        throw new Error("boom");
+      }
+    });
+
+    const response = await GET(requestWithAuth("Bearer test-cron-secret"));
+
+    expect(response.status).toBe(200);
+    expect(evaluateRound).toHaveBeenCalledTimes(2);
+    expect(evaluateRound).toHaveBeenCalledWith("bad-round");
+    expect(evaluateRound).toHaveBeenCalledWith("good-round");
+    expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
   });
 });
