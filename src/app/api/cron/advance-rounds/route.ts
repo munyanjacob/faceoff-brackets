@@ -3,6 +3,8 @@ import { findExpiredRounds } from "@/lib/rounds/find-expired-rounds";
 import { evaluateRound } from "@/lib/rounds/evaluate-round";
 import { findExpiredTieBreakers } from "@/lib/rounds/find-expired-tie-breakers";
 import { resolveTieBreaker } from "@/lib/rounds/resolve-tie-breaker";
+import { findDueScheduledBrackets } from "@/lib/rounds/find-due-scheduled-brackets";
+import { startScheduledBracket } from "@/lib/rounds/start-scheduled-bracket";
 
 // GET /api/cron/advance-rounds
 //
@@ -10,7 +12,7 @@ import { resolveTieBreaker } from "@/lib/rounds/resolve-tie-breaker";
 // calls scheduled routes with GET. Authenticates the caller against the
 // CRON_SECRET environment variable via a bearer token (#9).
 //
-// Two independent steps run on every authenticated invocation:
+// Three independent steps run on every authenticated invocation:
 //
 // Step 1 (#27): closes out Rounds whose time has expired.
 //   1. Find every Round that's still ACTIVE but whose endsAt has passed
@@ -30,16 +32,27 @@ import { resolveTieBreaker } from "@/lib/rounds/resolve-tie-breaker";
 //      - since resolving the tie-breaker may be the last thing blocking
 //      that Round from closing.
 //
-// Step 2 runs after step 1 on every invocation (not only when step 1 finds
-// nothing) - a Matchup's tie-breaker window can expire independently of any
-// Round's endsAt.
+// Step 3 (#28): starts scheduled brackets whose start time has arrived.
+//   1. Find every Bracket that's still SCHEDULED but whose scheduledStartAt
+//      has passed (#28's findDueScheduledBrackets).
+//   2. Call #28's startScheduledBracket on each one, which flips
+//      Bracket.status to ACTIVE, flips round 1's Round.status and each
+//      non-bye Matchup.status to ACTIVE, and stamps round 1's
+//      startsAt/endsAt from the actual transition time (now) rather than
+//      the originally scheduled time - so a late cron run doesn't
+//      shortchange the round's effective duration.
 //
-// Every unit of work (each Round in step 1, each Matchup in step 2) is
-// evaluated/resolved independently - one throwing (a data anomaly, a
-// transient DB error, etc.) is logged and skipped rather than aborting the
-// rest of the batch, so a single bad Round/Bracket/Matchup can never block
-// every other one from advancing. Nothing expired in either step is a safe
-// no-op that still returns 200.
+// Steps run in order on every invocation regardless of what an earlier step
+// found - none of them depend on another step having found (or not found)
+// anything: a Matchup's tie-breaker window can expire independently of any
+// Round's endsAt, and a Bracket's scheduled start is independent of both.
+//
+// Every unit of work (each Round in step 1, each Matchup in step 2, each
+// Bracket in step 3) is evaluated/resolved/started independently - one
+// throwing (a data anomaly, a transient DB error, etc.) is logged and
+// skipped rather than aborting the rest of the batch, so a single bad
+// Round/Bracket/Matchup can never block every other one from advancing.
+// Nothing due in any step is a safe no-op that still returns 200.
 export async function GET(request: Request) {
   const cronSecret = process.env.CRON_SECRET;
   const authHeader = request.headers.get("authorization");
@@ -82,6 +95,23 @@ export async function GET(request: Request) {
     }
   }
 
+  const dueScheduledBrackets = await findDueScheduledBrackets(prisma);
+
+  let bracketsStarted = 0;
+  let bracketsStartFailed = 0;
+  for (const bracket of dueScheduledBrackets) {
+    try {
+      await startScheduledBracket(bracket.id);
+      bracketsStarted++;
+    } catch (error) {
+      bracketsStartFailed++;
+      console.error(
+        `[cron/advance-rounds] failed to start scheduled bracket ${bracket.id}:`,
+        error
+      );
+    }
+  }
+
   return Response.json({
     ok: true,
     expired: expiredRounds.length,
@@ -90,5 +120,8 @@ export async function GET(request: Request) {
     expiredTieBreakers: expiredTieBreakers.length,
     tieBreakersResolved,
     tieBreakersFailed,
+    dueScheduledBrackets: dueScheduledBrackets.length,
+    bracketsStarted,
+    bracketsStartFailed,
   });
 }
