@@ -18,5 +18,11 @@ export default defineConfig(({ mode }) => ({
     // project configured there (e.g. the getUser() check in
     // src/lib/supabase/get-user.signed-out.test.ts).
     env: loadEnv(mode, process.cwd(), ""),
+    // Parallel-agent git worktrees live under .worktrees/ (see
+    // .gitignore) as separate checkouts of other branches, each with its
+    // own dependencies/modules. Without this exclude, running tests from
+    // this checkout recurses into them and fails on imports that don't
+    // exist on this branch.
+    exclude: ["**/node_modules/**", "**/.worktrees/**"],
   },
 }));
