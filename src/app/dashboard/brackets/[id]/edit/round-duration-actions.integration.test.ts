@@ -54,7 +54,7 @@ describe.runIf(hasLiveDatabase)(
   () => {
     let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
     let updateRoundDuration: typeof import("./round-duration-actions").updateRoundDuration;
-    let initialRoundDurationFormState: typeof import("./round-duration-actions").initialRoundDurationFormState;
+    let initialRoundDurationFormState: typeof import("./round-duration-form-state").initialRoundDurationFormState;
 
     const creatorId = randomUUID();
     const otherCreatorId = randomUUID();
@@ -67,8 +67,9 @@ describe.runIf(hasLiveDatabase)(
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ updateRoundDuration, initialRoundDurationFormState } = await import(
-        "./round-duration-actions"
+      ({ updateRoundDuration } = await import("./round-duration-actions"));
+      ({ initialRoundDurationFormState } = await import(
+        "./round-duration-form-state"
       ));
 
       // Disposable test creators - never real signed-up users.

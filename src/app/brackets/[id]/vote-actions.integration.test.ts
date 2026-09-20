@@ -76,7 +76,7 @@ describe.runIf(hasLiveDatabase)(
   () => {
     let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
     let castVote: typeof import("./vote-actions").castVote;
-    let initialVoteFormState: typeof import("./vote-actions").initialVoteFormState;
+    let initialVoteFormState: typeof import("./vote-form-state").initialVoteFormState;
 
     const creatorId = randomUUID();
     const voterProfileId = randomUUID();
@@ -108,21 +108,21 @@ describe.runIf(hasLiveDatabase)(
     let tooLongCommentMatchupId: string;
     let tooLongCommentItemAId: string;
 
-    let RATE_LIMIT_ERROR: typeof import("./vote-actions").RATE_LIMIT_ERROR;
-    let VOTE_RATE_LIMIT_MAX_VOTES: typeof import("./vote-actions").VOTE_RATE_LIMIT_MAX_VOTES;
-    let MAX_COMMENT_LENGTH: typeof import("./vote-actions").MAX_COMMENT_LENGTH;
-    let COMMENT_TOO_LONG_ERROR: typeof import("./vote-actions").COMMENT_TOO_LONG_ERROR;
+    let RATE_LIMIT_ERROR: typeof import("./vote-form-state").RATE_LIMIT_ERROR;
+    let VOTE_RATE_LIMIT_MAX_VOTES: typeof import("./vote-form-state").VOTE_RATE_LIMIT_MAX_VOTES;
+    let MAX_COMMENT_LENGTH: typeof import("./vote-form-state").MAX_COMMENT_LENGTH;
+    let COMMENT_TOO_LONG_ERROR: typeof import("./vote-form-state").COMMENT_TOO_LONG_ERROR;
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
+      ({ castVote } = await import("./vote-actions"));
       ({
-        castVote,
         initialVoteFormState,
         RATE_LIMIT_ERROR,
         VOTE_RATE_LIMIT_MAX_VOTES,
         MAX_COMMENT_LENGTH,
         COMMENT_TOO_LONG_ERROR,
-      } = await import("./vote-actions"));
+      } = await import("./vote-form-state"));
 
       await prisma.profile.createMany({
         data: [

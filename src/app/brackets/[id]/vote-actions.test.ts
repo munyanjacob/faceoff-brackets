@@ -46,14 +46,14 @@ vi.mock("node:crypto", async (importOriginal) => {
   return { ...actual, randomUUID };
 });
 
+const { castVote } = await import("./vote-actions");
 const {
-  castVote,
   initialVoteFormState,
   RATE_LIMIT_ERROR,
   VOTE_RATE_LIMIT_MAX_VOTES,
   MAX_COMMENT_LENGTH,
   COMMENT_TOO_LONG_ERROR,
-} = await import("./vote-actions");
+} = await import("./vote-form-state");
 const { signAnonymousVoterId } = await import("./voter-identity");
 
 function formDataWithComment(comment: string): FormData {

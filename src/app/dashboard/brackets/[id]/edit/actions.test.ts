@@ -41,8 +41,8 @@ vi.mock("next/cache", () => ({ revalidatePath }));
 // unmocked upload against the live Supabase project.
 vi.mock("./image-upload", () => ({ uploadBracketItemImage }));
 
-const { addItem, updateItem, removeItem, initialItemFormState } =
-  await import("./actions");
+const { addItem, updateItem, removeItem } = await import("./actions");
+const { initialItemFormState } = await import("./item-form-state");
 
 function formData(fields: Record<string, string | File>): FormData {
   const data = new FormData();

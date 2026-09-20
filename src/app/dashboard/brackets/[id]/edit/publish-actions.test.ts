@@ -39,9 +39,8 @@ vi.mock("@/lib/prisma", () => ({
 // for that reason.
 vi.mock("next/cache", () => ({ revalidatePath }));
 
-const { publishBracket, initialPublishFormState } = await import(
-  "./publish-actions"
-);
+const { publishBracket } = await import("./publish-actions");
+const { initialPublishFormState } = await import("./publish-form-state");
 
 function expect404(thrown: unknown) {
   expect(thrown).toBeDefined();
@@ -518,7 +517,7 @@ describe("publishBracket", () => {
       (publishActionsModule as Record<string, unknown>).unpublishBracket
     ).toBeUndefined();
     expect(Object.keys(publishActionsModule).sort()).toEqual(
-      ["initialPublishFormState", "publishBracket"].sort()
+      ["publishBracket"].sort()
     );
   });
 });

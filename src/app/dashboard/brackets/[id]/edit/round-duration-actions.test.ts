@@ -24,8 +24,9 @@ vi.mock("@/lib/prisma", () => ({
 // provide.
 vi.mock("next/cache", () => ({ revalidatePath }));
 
-const { updateRoundDuration, initialRoundDurationFormState } = await import(
-  "./round-duration-actions"
+const { updateRoundDuration } = await import("./round-duration-actions");
+const { initialRoundDurationFormState } = await import(
+  "./round-duration-form-state"
 );
 
 function formData(fields: Record<string, string>): FormData {

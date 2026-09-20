@@ -47,8 +47,6 @@ import { uploadBracketItemImage } from "./image-upload";
  */
 export type ItemFormState = { error: string | null };
 
-export const initialItemFormState: ItemFormState = { error: null };
-
 const NOT_DRAFT_ERROR =
   "This bracket is no longer a draft, so its items can't be changed.";
 

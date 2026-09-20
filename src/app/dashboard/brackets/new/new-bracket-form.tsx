@@ -2,7 +2,8 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { createBracket, initialCreateBracketState } from "./actions";
+import { createBracket } from "./actions";
+import { initialCreateBracketState } from "./action-state";
 
 /**
  * The "create bracket" form (issue #10). A Client Component so it can use

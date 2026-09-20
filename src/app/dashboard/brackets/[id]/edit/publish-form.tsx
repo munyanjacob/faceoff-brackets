@@ -2,7 +2,8 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { initialPublishFormState, publishBracket } from "./publish-actions";
+import { publishBracket } from "./publish-actions";
+import { initialPublishFormState } from "./publish-form-state";
 
 /**
  * The "Publish" action on a draft bracket's edit page (issue #16). Only ever

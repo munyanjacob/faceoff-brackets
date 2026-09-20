@@ -58,7 +58,7 @@ describe.runIf(hasLiveDatabase)(
   () => {
     let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
     let updateScheduledStart: typeof import("./scheduled-start-actions").updateScheduledStart;
-    let initialScheduledStartFormState: typeof import("./scheduled-start-actions").initialScheduledStartFormState;
+    let initialScheduledStartFormState: typeof import("./scheduled-start-form-state").initialScheduledStartFormState;
 
     const creatorId = randomUUID();
     const otherCreatorId = randomUUID();
@@ -71,8 +71,10 @@ describe.runIf(hasLiveDatabase)(
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ updateScheduledStart, initialScheduledStartFormState } =
-        await import("./scheduled-start-actions"));
+      ({ updateScheduledStart } = await import("./scheduled-start-actions"));
+      ({ initialScheduledStartFormState } = await import(
+        "./scheduled-start-form-state"
+      ));
 
       // Disposable test creators - never real signed-up users.
       await prisma.profile.createMany({

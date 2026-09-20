@@ -42,10 +42,6 @@ import {
  */
 export type RoundDurationFormState = { error: string | null };
 
-export const initialRoundDurationFormState: RoundDurationFormState = {
-  error: null,
-};
-
 const NOT_DRAFT_ERROR =
   "This bracket is no longer a draft, so its round durations can't be changed.";
 

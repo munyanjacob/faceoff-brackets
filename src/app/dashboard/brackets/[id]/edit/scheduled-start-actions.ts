@@ -36,10 +36,6 @@ import { validateScheduledStartForm } from "./scheduled-start";
  */
 export type ScheduledStartFormState = { error: string | null };
 
-export const initialScheduledStartFormState: ScheduledStartFormState = {
-  error: null,
-};
-
 const NOT_DRAFT_ERROR =
   "This bracket is no longer a draft, so its start time can't be changed.";
 

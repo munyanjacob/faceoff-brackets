@@ -56,16 +56,15 @@ describe.runIf(hasLiveDatabase)(
   () => {
     let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
     let createBracket: typeof import("./actions").createBracket;
-    let initialCreateBracketState: typeof import("./actions").initialCreateBracketState;
+    let initialCreateBracketState: typeof import("./action-state").initialCreateBracketState;
 
     const creatorId = randomUUID();
     const bracketIds: string[] = [];
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ createBracket, initialCreateBracketState } = await import(
-        "./actions"
-      ));
+      ({ createBracket } = await import("./actions"));
+      ({ initialCreateBracketState } = await import("./action-state"));
 
       // Disposable test creator - never a real signed-up user.
       await prisma.profile.create({

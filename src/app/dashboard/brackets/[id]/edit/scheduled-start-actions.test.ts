@@ -22,8 +22,9 @@ vi.mock("@/lib/prisma", () => ({
 // provide.
 vi.mock("next/cache", () => ({ revalidatePath }));
 
-const { updateScheduledStart, initialScheduledStartFormState } = await import(
-  "./scheduled-start-actions"
+const { updateScheduledStart } = await import("./scheduled-start-actions");
+const { initialScheduledStartFormState } = await import(
+  "./scheduled-start-form-state"
 );
 
 function formData(fields: Record<string, string>): FormData {

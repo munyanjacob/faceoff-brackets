@@ -2,7 +2,8 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { addItem, initialItemFormState } from "./actions";
+import { addItem } from "./actions";
+import { initialItemFormState } from "./item-form-state";
 import { ALLOWED_IMAGE_MIME_TYPES } from "./validation";
 
 /**
@@ -16,10 +17,11 @@ import { ALLOWED_IMAGE_MIME_TYPES } from "./validation";
  * a hidden input, the same reasoning as `../new/new-bracket-form.tsx` uses
  * `useActionState` for the "Title is required." validation error.
  *
- * `encType="multipart/form-data"` matters for the no-JS progressive
- * enhancement fallback (a real POST with a `File` field needs it); React's
- * `action={formAction}` interception builds the right `FormData` either
- * way.
+ * No `encType` prop here: when `action` is a function, React manages
+ * `method`/`encType` itself (including for the no-JS progressive
+ * enhancement fallback) and overrides/warns on any explicit value - see
+ * the "Cannot specify a encType or method..." warning in
+ * `node_modules/react-dom/cjs/react-dom-client.development.js`.
  */
 export function AddItemForm({ bracketId }: { bracketId: string }) {
   const addItemForThisBracket = addItem.bind(null, bracketId);
@@ -29,11 +31,7 @@ export function AddItemForm({ bracketId }: { bracketId: string }) {
   );
 
   return (
-    <form
-      action={formAction}
-      encType="multipart/form-data"
-      className="flex flex-col gap-2 border p-3"
-    >
+    <form action={formAction} className="flex flex-col gap-2 border p-3">
       <h2 className="text-lg font-semibold">Add an item</h2>
 
       <div className="flex flex-col gap-1">

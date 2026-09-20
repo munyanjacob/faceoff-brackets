@@ -3,10 +3,8 @@
 import { useState } from "react";
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import {
-  initialScheduledStartFormState,
-  updateScheduledStart,
-} from "./scheduled-start-actions";
+import { updateScheduledStart } from "./scheduled-start-actions";
+import { initialScheduledStartFormState } from "./scheduled-start-form-state";
 import { toDatetimeLocalValue } from "./scheduled-start";
 
 /**

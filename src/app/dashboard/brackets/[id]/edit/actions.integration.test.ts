@@ -82,7 +82,7 @@ describe.runIf(hasLiveDatabase)(
     let addItem: typeof import("./actions").addItem;
     let updateItem: typeof import("./actions").updateItem;
     let removeItem: typeof import("./actions").removeItem;
-    let initialItemFormState: typeof import("./actions").initialItemFormState;
+    let initialItemFormState: typeof import("./item-form-state").initialItemFormState;
 
     const creatorId = randomUUID();
     const otherCreatorId = randomUUID();
@@ -94,8 +94,8 @@ describe.runIf(hasLiveDatabase)(
 
     beforeAll(async () => {
       ({ prisma } = await import("@/lib/prisma"));
-      ({ addItem, updateItem, removeItem, initialItemFormState } =
-        await import("./actions"));
+      ({ addItem, updateItem, removeItem } = await import("./actions"));
+      ({ initialItemFormState } = await import("./item-form-state"));
 
       // Disposable test creators - never real signed-up users.
       await prisma.profile.createMany({

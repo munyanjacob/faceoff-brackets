@@ -82,11 +82,10 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("./image-upload", () => ({ uploadBracketItemImage }));
 
-const { publishBracket, initialPublishFormState } = await import(
-  "./publish-actions"
-);
-const { addItem, updateItem, removeItem, initialItemFormState } =
-  await import("./actions");
+const { publishBracket } = await import("./publish-actions");
+const { initialPublishFormState } = await import("./publish-form-state");
+const { addItem, updateItem, removeItem } = await import("./actions");
+const { initialItemFormState } = await import("./item-form-state");
 
 function formData(fields: Record<string, string>): FormData {
   const data = new FormData();

@@ -16,8 +16,6 @@ export type CreateBracketState = {
   error: string | null;
 };
 
-export const initialCreateBracketState: CreateBracketState = { error: null };
-
 // #13/#14 let the creator configure round durations explicitly; until then,
 // `defaultRoundDurationMinutes` (NOT NULL, no column default - see
 // `prisma/schema.prisma`) needs *something* to hold, so every draft created

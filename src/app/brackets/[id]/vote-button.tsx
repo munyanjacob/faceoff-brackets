@@ -3,7 +3,8 @@
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import { MAX_COMMENT_LENGTH, useVoteComment } from "./comment-field";
-import { castVote, initialVoteFormState } from "./vote-actions";
+import { castVote } from "./vote-actions";
+import { initialVoteFormState } from "./vote-form-state";
 
 /**
  * The real "Vote" button for one item in the current matchup (issue #22),

@@ -2,10 +2,8 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import {
-  initialRoundDurationFormState,
-  updateRoundDuration,
-} from "./round-duration-actions";
+import { updateRoundDuration } from "./round-duration-actions";
+import { initialRoundDurationFormState } from "./round-duration-form-state";
 import { roundNameHint, type RoundDurationOverrides } from "./round-duration";
 
 /**

@@ -15,9 +15,8 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-const { createBracket, initialCreateBracketState } = await import(
-  "./actions"
-);
+const { createBracket } = await import("./actions");
+const { initialCreateBracketState } = await import("./action-state");
 
 function formData(fields: Record<string, string>): FormData {
   const data = new FormData();

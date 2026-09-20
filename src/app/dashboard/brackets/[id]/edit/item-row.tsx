@@ -2,7 +2,8 @@
 
 import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
-import { updateItem, removeItem, initialItemFormState } from "./actions";
+import { updateItem, removeItem } from "./actions";
+import { initialItemFormState } from "./item-form-state";
 import { ALLOWED_IMAGE_MIME_TYPES } from "./validation";
 
 export type BracketItemRow = {
@@ -74,11 +75,7 @@ export function ItemRow({
 
   return (
     <div className="flex flex-col gap-2 border p-3">
-      <form
-        action={updateAction}
-        encType="multipart/form-data"
-        className="flex flex-col gap-1"
-      >
+      <form action={updateAction} className="flex flex-col gap-1">
         <label htmlFor={`item-title-${item.id}`}>Title</label>
         <input
           id={`item-title-${item.id}`}

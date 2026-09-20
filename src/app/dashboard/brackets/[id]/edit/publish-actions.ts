@@ -60,8 +60,6 @@ import { parseStoredRoundDurationOverrides } from "./round-duration";
  */
 export type PublishFormState = { error: string | null };
 
-export const initialPublishFormState: PublishFormState = { error: null };
-
 const NOT_DRAFT_ERROR = "This bracket has already been published.";
 
 const NOT_ENOUGH_ITEMS_ERROR =
