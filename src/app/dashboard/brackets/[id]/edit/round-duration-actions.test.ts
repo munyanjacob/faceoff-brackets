@@ -186,6 +186,26 @@ describe("updateRoundDuration", () => {
     });
   });
 
+  it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+    });
+    itemCount.mockResolvedValue(4);
+    bracketUpdate.mockRejectedValue(new Error("connection reset"));
+
+    const result = await updateRoundDuration(
+      "bracket-1",
+      initialRoundDurationFormState,
+      formData({ defaultRoundDurationMinutes: "60" })
+    );
+
+    expect(result).toEqual({
+      error: "Something went wrong. Please try again.",
+    });
+  });
+
   it("404s instead of updating round durations on a bracket that isn't the signed-in creator's", async () => {
     bracketFindFirst.mockResolvedValue(null);
 

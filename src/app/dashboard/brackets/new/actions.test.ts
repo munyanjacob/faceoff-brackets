@@ -162,6 +162,21 @@ describe("createBracket action", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("returns a generic user-facing error, instead of an unhandled exception, when the database create fails unexpectedly (issue #36)", async () => {
+    create.mockRejectedValue(new Error("connection reset"));
+
+    const result = await createBracket(
+      initialCreateBracketState,
+      formData({
+        title: "Best Sitcom",
+        visibility: "PUBLIC",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+      })
+    );
+
+    expect(result).toEqual({ error: "Something went wrong. Please try again." });
+  });
+
   it("redirects to /login and creates no row when there is no signed-in user", async () => {
     getUser.mockResolvedValue({ data: { user: null }, error: null });
 

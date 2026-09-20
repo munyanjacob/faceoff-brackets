@@ -217,6 +217,25 @@ describe("BracketItem Server Actions", () => {
       expect(itemCreate).not.toHaveBeenCalled();
     });
 
+    it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        creatorId: "creator-1",
+        status: "DRAFT",
+      });
+      itemCreate.mockRejectedValue(new Error("connection reset"));
+
+      const result = await addItem(
+        "bracket-1",
+        initialItemFormState,
+        formData({ title: "Die Hard" })
+      );
+
+      expect(result).toEqual({
+        error: "Something went wrong. Please try again.",
+      });
+    });
+
     it("404s instead of adding an item to a bracket that isn't the signed-in creator's", async () => {
       bracketFindFirst.mockResolvedValue(null);
 
@@ -424,6 +443,27 @@ describe("BracketItem Server Actions", () => {
       expect(itemUpdate).not.toHaveBeenCalled();
     });
 
+    it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        creatorId: "creator-1",
+        status: "DRAFT",
+      });
+      itemFindFirst.mockResolvedValue({ id: "item-1", bracketId: "bracket-1" });
+      itemUpdate.mockRejectedValue(new Error("connection reset"));
+
+      const result = await updateItem(
+        "bracket-1",
+        "item-1",
+        initialItemFormState,
+        formData({ title: "Die Hard 2" })
+      );
+
+      expect(result).toEqual({
+        error: "Something went wrong. Please try again.",
+      });
+    });
+
     it("404s instead of updating an item that belongs to a different bracket", async () => {
       bracketFindFirst.mockResolvedValue({
         id: "bracket-1",
@@ -514,6 +554,27 @@ describe("BracketItem Server Actions", () => {
         "/dashboard/brackets/bracket-1/edit"
       );
       expect(result).toEqual({ error: null });
+    });
+
+    it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+      bracketFindFirst.mockResolvedValue({
+        id: "bracket-1",
+        creatorId: "creator-1",
+        status: "DRAFT",
+      });
+      itemFindFirst.mockResolvedValue({ id: "item-1", bracketId: "bracket-1" });
+      itemDelete.mockRejectedValue(new Error("connection reset"));
+
+      const result = await removeItem(
+        "bracket-1",
+        "item-1",
+        initialItemFormState,
+        formData({})
+      );
+
+      expect(result).toEqual({
+        error: "Something went wrong. Please try again.",
+      });
     });
 
     it("404s instead of removing an item that belongs to a different bracket", async () => {

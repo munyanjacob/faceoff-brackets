@@ -140,6 +140,25 @@ describe("updateScheduledStart", () => {
     expect(bracketUpdate).not.toHaveBeenCalled();
   });
 
+  it("returns a generic user-facing error, instead of an unhandled exception, when the database is unreachable (issue #36)", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+    });
+    bracketUpdate.mockRejectedValue(new Error("connection reset"));
+
+    const result = await updateScheduledStart(
+      "bracket-1",
+      initialScheduledStartFormState,
+      formData({ startMode: "immediate" })
+    );
+
+    expect(result).toEqual({
+      error: "Something went wrong. Please try again.",
+    });
+  });
+
   it("404s instead of updating the start time on a bracket that isn't the signed-in creator's", async () => {
     bracketFindFirst.mockResolvedValue(null);
 

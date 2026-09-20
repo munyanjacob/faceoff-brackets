@@ -1,6 +1,6 @@
 "use server";
 
-import { redirect } from "next/navigation";
+import { redirect, unstable_rethrow } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 import { validateCreateBracketForm } from "./validation";
@@ -25,6 +25,13 @@ export const initialCreateBracketState: CreateBracketState = { error: null };
 // for #10 per the issue's "Out of scope" list.
 const PLACEHOLDER_DEFAULT_ROUND_DURATION_MINUTES = 60;
 
+// Issue #36: a generic, user-facing fallback for a DB/Supabase failure that
+// isn't one of the validation errors above - e.g. the database being
+// temporarily unreachable. Rendered inline by `./new-bracket-form.tsx` the
+// same way as any other `state.error`, rather than letting the exception
+// propagate into Next's generic error boundary/blank page.
+const UNEXPECTED_ERROR = "Something went wrong. Please try again.";
+
 export async function createBracket(
   _prevState: CreateBracketState,
   formData: FormData
@@ -47,17 +54,30 @@ export async function createBracket(
     return { error: validated.error };
   }
 
-  const bracket = await prisma.bracket.create({
-    data: {
-      creatorId: user.id,
-      title: validated.data.title,
-      description: validated.data.description,
-      visibility: validated.data.visibility,
-      votingRequirement: validated.data.votingRequirement,
-      defaultRoundDurationMinutes: PLACEHOLDER_DEFAULT_ROUND_DURATION_MINUTES,
-      status: "DRAFT",
-    },
-  });
+  let bracket: { id: string };
+  try {
+    bracket = await prisma.bracket.create({
+      data: {
+        creatorId: user.id,
+        title: validated.data.title,
+        description: validated.data.description,
+        visibility: validated.data.visibility,
+        votingRequirement: validated.data.votingRequirement,
+        defaultRoundDurationMinutes:
+          PLACEHOLDER_DEFAULT_ROUND_DURATION_MINUTES,
+        status: "DRAFT",
+      },
+    });
+  } catch (err) {
+    // `redirect()`/`notFound()` throw internally too (see below), but
+    // neither is ever thrown from inside this specific `try` - only real
+    // unexpected failures (e.g. the database being unreachable) land here.
+    // `unstable_rethrow` is still the right guard (matches every other
+    // Server Action's try/catch in this issue's changes) in case Prisma
+    // itself ever wraps/re-throws one of those framework errors.
+    unstable_rethrow(err);
+    return { error: UNEXPECTED_ERROR };
+  }
 
   // Deliberately outside any try/catch: redirect() works by throwing, and a
   // surrounding catch would swallow the navigation (same reasoning as
