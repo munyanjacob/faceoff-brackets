@@ -2,12 +2,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const findUnique = vi.fn();
 const voteFindFirst = vi.fn();
+const voteCount = vi.fn();
 const getUser = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bracket: { findUnique },
-    vote: { findFirst: voteFindFirst },
+    vote: { findFirst: voteFindFirst, count: voteCount },
   },
 }));
 
@@ -68,12 +69,14 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
   beforeEach(() => {
     findUnique.mockReset();
     voteFindFirst.mockReset();
+    voteCount.mockReset();
     getUser.mockReset();
 
     // Default: signed out, no existing vote - the common case for most
     // tests below that don't care about voter identity.
     getUser.mockResolvedValue({ data: { user: null }, error: null });
     voteFindFirst.mockResolvedValue(null);
+    voteCount.mockResolvedValue(0);
   });
 
   it("queries the bracket by id with only its ACTIVE round and that round's matchups/items", async () => {
@@ -310,6 +313,128 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
     expect(html).toContain("Your vote");
     // No Vote control at all once an existing vote is known.
     expect(html).not.toContain('"matchupId"');
+  });
+
+  describe("issue #24: live results after voting", () => {
+    it("never queries vote counts for a voter who hasn't voted yet", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"),
+      });
+      voteFindFirst.mockResolvedValue(null);
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(voteCount).not.toHaveBeenCalled();
+      expect(html).not.toMatch(/\d+ votes?"/);
+    });
+
+    it("never queries or shows vote counts for a blocked (signed-out, ACCOUNT_REQUIRED) voter", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ACCOUNT_REQUIRED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"),
+      });
+      getUser.mockResolvedValue({ data: { user: null }, error: null });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(voteCount).not.toHaveBeenCalled();
+      expect(html).not.toMatch(/\d+ votes?"/);
+    });
+
+    it("queries and shows current vote counts for both items once the signed-in voter has already voted", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"),
+      });
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+      voteFindFirst.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+      voteCount.mockImplementation(async ({ where }: { where: { itemId: string } }) =>
+        where.itemId === "item-a" ? 7 : 3
+      );
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(voteCount).toHaveBeenCalledWith({
+        where: { matchupId: "m1", itemId: "item-a" },
+      });
+      expect(voteCount).toHaveBeenCalledWith({
+        where: { matchupId: "m1", itemId: "item-b" },
+      });
+      expect(html).toContain('"7 votes"');
+      expect(html).toContain('"3 votes"');
+    });
+
+    it("shows the singular 'vote' for a count of exactly 1", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"),
+      });
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+      voteFindFirst.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+      voteCount.mockImplementation(async ({ where }: { where: { itemId: string } }) =>
+        where.itemId === "item-a" ? 1 : 0
+      );
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain('"1 vote"');
+      expect(html).not.toContain('"1 votes"');
+      expect(html).toContain('"0 votes"');
+    });
+
+    it("shows the same, up-to-date vote counts for both items when revisiting a matchup already voted on (this is what makes a refresh show others' votes too)", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"),
+      });
+      // A signed-in voter revisiting later - same `determineVoterContext`
+      // path a returning anonymous voter with a valid cookie would take
+      // (see `./voter-identity.ts`'s `currentVoterLookupKey`); this test
+      // suite's `next/headers` mock never carries a cookie, so a signed-in
+      // identity is what actually exercises the "found an existing Vote on
+      // this page load, not from a just-submitted form" path here.
+      getUser.mockResolvedValue({
+        data: { user: { id: "voter-1" } },
+        error: null,
+      });
+      voteFindFirst.mockResolvedValue({ id: "vote-1", itemId: "item-b" });
+      voteCount.mockImplementation(async ({ where }: { where: { itemId: string } }) =>
+        where.itemId === "item-a" ? 10 : 12
+      );
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain("Your vote");
+      expect(html).toContain('"10 votes"');
+      expect(html).toContain('"12 votes"');
+    });
   });
 
   it("looks up an existing vote by userId when signed in, without ever reading an anonymous cookie", async () => {

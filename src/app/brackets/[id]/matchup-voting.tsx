@@ -1,6 +1,7 @@
 import { CommentField, CommentProvider } from "./comment-field";
 import { VoteButton } from "./vote-button";
 import type {
+  VoteCounts,
   VoterContext,
   VotingItem,
   VotingMatchup,
@@ -50,17 +51,29 @@ import type {
  * to be reached from here, now that `../page.tsx` redirects straight past
  * itself into a single matchup (#40) instead of rendering anything a link
  * could sit next to.
+ *
+ * `voteCounts` (issue #24) is threaded straight through to `VoteControl`
+ * below, unused everywhere in between - only relevant once
+ * `voterContext.existingVoteItemId` is set, at which point it's guaranteed
+ * non-null by `./matchups/[matchupId]/page.tsx` (the only real caller that
+ * ever populates it; `../page.tsx`'s own bracket-level status-message call
+ * has no matchup to count votes for, so it passes `null`). Optional with a
+ * `null` default so every existing call site - `../page.tsx`'s
+ * `no-active-matchup` case included - doesn't have to start threading a
+ * value it never needs.
  */
 export function MatchupVoting({
   bracketTitle,
   bracketId,
   votingState,
   voterContext,
+  voteCounts = null,
 }: {
   bracketTitle: string;
   bracketId: string;
   votingState: VotingState;
   voterContext: VoterContext;
+  voteCounts?: VoteCounts | null;
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
@@ -76,6 +89,7 @@ export function MatchupVoting({
             matchup: votingState.matchup,
             isTieBreaker: votingState.isTieBreaker,
             voterContext,
+            voteCounts,
           })}
     </main>
   );
@@ -102,10 +116,12 @@ function MatchupPanel({
   matchup,
   isTieBreaker,
   voterContext,
+  voteCounts,
 }: {
   matchup: VotingMatchup;
   isTieBreaker: boolean;
   voterContext: VoterContext;
+  voteCounts: VoteCounts | null;
 }) {
   if (!matchup.itemA || !matchup.itemB) {
     return StatusMessage({
@@ -134,7 +150,7 @@ function MatchupPanel({
       {voterContext.kind === "blocked"
         ? StatusMessage({ message: voterContext.message })
         : null}
-      {VotingArea({ matchup: completeMatchup, voterContext })}
+      {VotingArea({ matchup: completeMatchup, voterContext, voteCounts })}
     </section>
   );
 }
@@ -149,14 +165,26 @@ function MatchupPanel({
 function VotingArea({
   matchup,
   voterContext,
+  voteCounts,
 }: {
   matchup: VotingMatchup & { itemA: VotingItem; itemB: VotingItem };
   voterContext: VoterContext;
+  voteCounts: VoteCounts | null;
 }) {
   const itemsRow = (
     <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-center">
-      {ItemPanel({ matchupId: matchup.id, item: matchup.itemA, voterContext })}
-      {ItemPanel({ matchupId: matchup.id, item: matchup.itemB, voterContext })}
+      {ItemPanel({
+        matchupId: matchup.id,
+        item: matchup.itemA,
+        voterContext,
+        voteCounts,
+      })}
+      {ItemPanel({
+        matchupId: matchup.id,
+        item: matchup.itemB,
+        voterContext,
+        voteCounts,
+      })}
     </div>
   );
 
@@ -179,10 +207,12 @@ function ItemPanel({
   matchupId,
   item,
   voterContext,
+  voteCounts,
 }: {
   matchupId: string;
   item: VotingItem;
   voterContext: VoterContext;
+  voteCounts: VoteCounts | null;
 }) {
   return (
     <div className="flex w-full flex-col items-center gap-2 border p-4 sm:w-72" key={item.id}>
@@ -212,7 +242,7 @@ function ItemPanel({
         <p className="text-center text-sm text-gray-600">{item.description}</p>
       ) : null}
 
-      {VoteControl({ matchupId, item, voterContext })}
+      {VoteControl({ matchupId, item, voterContext, voteCounts })}
     </div>
   );
 }
@@ -225,32 +255,66 @@ function ItemPanel({
  *     both items.
  *  2. An existing vote already found for this matchup (whether from before
  *     this page load, or from a just-submitted `<VoteButton>` reporting its
- *     result) - show which item it was for, nothing on the other.
+ *     result) - show which item it was for, plus (issue #24) both items'
+ *     current vote counts.
  *  3. Otherwise, a real `<VoteButton>` (issue #22's actual submission path -
  *     see `./vote-button.tsx`).
+ *
+ * Issue #24's live results: rendered for *both* items once there's an
+ * existing vote, not just the one the voter picked - `VoteCount` below reads
+ * `voteCounts[item.id]`, which `./matchups/[matchupId]/page.tsx` populates
+ * for both `itemA` and `itemB` in one pass exactly when this branch can be
+ * reached. `voteCounts` can still be `null` here in principle (e.g. a
+ * caller that doesn't pass it) - treated as "0 votes" rather than crashing,
+ * though in practice `./matchups/[matchupId]/page.tsx` always populates it
+ * whenever `existingVoteItemId` is set.
  */
 function VoteControl({
   matchupId,
   item,
   voterContext,
+  voteCounts,
 }: {
   matchupId: string;
   item: VotingItem;
   voterContext: VoterContext;
+  voteCounts: VoteCounts | null;
 }) {
   if (voterContext.kind === "blocked") {
     return null;
   }
 
   if (voterContext.existingVoteItemId) {
-    return voterContext.existingVoteItemId === item.id
-      ? (
-          <p aria-live="polite" className="mt-2 text-sm font-medium">
+    return (
+      <div className="mt-2 flex flex-col items-center gap-1">
+        {voterContext.existingVoteItemId === item.id ? (
+          <p aria-live="polite" className="text-sm font-medium">
             Your vote
           </p>
-        )
-      : null;
+        ) : null}
+        {VoteCount({ count: voteCounts?.[item.id] ?? 0 })}
+      </div>
+    );
   }
 
   return <VoteButton matchupId={matchupId} itemId={item.id} />;
+}
+
+/**
+ * Issue #24's actual results presentation: a plain "N votes" line under an
+ * item, kept deliberately simple (no bar chart, no percentage) - consistent
+ * with this file's plain-Tailwind, text-first styling elsewhere (e.g.
+ * `StatusMessage`), and the issue leaves the exact presentation to
+ * engineering judgment.
+ */
+function VoteCount({ count }: { count: number }) {
+  // A single interpolated string, not `{count} {word}` split across JSX
+  // children - keeps this a plain string node (same shape as every other
+  // message in this file, e.g. `StatusMessage`), which also happens to be
+  // what makes it possible for `./matchups/[matchupId]/page.test.tsx` to
+  // assert on the rendered text via a single `.toContain(...)` call against
+  // the `JSON.stringify`d tree.
+  return (
+    <p className="text-sm text-gray-600">{`${count} ${count === 1 ? "vote" : "votes"}`}</p>
+  );
 }
