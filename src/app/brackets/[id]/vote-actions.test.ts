@@ -4,6 +4,7 @@ import { Prisma } from "@/generated/prisma/client";
 const getUser = vi.fn();
 const matchupFindUnique = vi.fn();
 const voteFindFirst = vi.fn();
+const voteCount = vi.fn();
 const voteCreate = vi.fn();
 const revalidatePath = vi.fn();
 const randomUUID = vi.fn();
@@ -20,7 +21,7 @@ vi.mock("@/lib/supabase/server", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     matchup: { findUnique: matchupFindUnique },
-    vote: { findFirst: voteFindFirst, create: voteCreate },
+    vote: { findFirst: voteFindFirst, count: voteCount, create: voteCreate },
   },
 }));
 
@@ -33,9 +34,21 @@ vi.mock("next/headers", () => ({
   })),
 }));
 
-vi.mock("node:crypto", () => ({ randomUUID }));
+// Only `randomUUID` is mocked here - `signAnonymousVoterId`/
+// `verifyAnonymousVoterId` (issue #35) are exercised for real (not mocked),
+// same "mock the primitive, not the logic under test" reasoning as leaving
+// `Prisma`'s error class itself unmocked below. They're deterministic pure
+// functions of `VOTE_COOKIE_SECRET` (or its dev fallback), so real signing
+// and verifying within a single test run is both simpler and more honest
+// than hand-rolling a fake cookie format here.
+vi.mock("node:crypto", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:crypto")>();
+  return { ...actual, randomUUID };
+});
 
-const { castVote, initialVoteFormState } = await import("./vote-actions");
+const { castVote, initialVoteFormState, RATE_LIMIT_ERROR, VOTE_RATE_LIMIT_MAX_VOTES } =
+  await import("./vote-actions");
+const { signAnonymousVoterId } = await import("./voter-identity");
 
 function activeMatchup(overrides: Record<string, unknown> = {}) {
   return {
@@ -58,6 +71,7 @@ describe("castVote", () => {
     getUser.mockReset();
     matchupFindUnique.mockReset();
     voteFindFirst.mockReset();
+    voteCount.mockReset();
     voteCreate.mockReset();
     revalidatePath.mockReset();
     randomUUID.mockReset();
@@ -66,6 +80,7 @@ describe("castVote", () => {
 
     getUser.mockResolvedValue({ data: { user: null }, error: null });
     voteFindFirst.mockResolvedValue(null);
+    voteCount.mockResolvedValue(0);
     cookieGet.mockReturnValue(undefined);
     randomUUID.mockReturnValue("generated-anon-id");
   });
@@ -235,7 +250,7 @@ describe("castVote", () => {
     expect(revalidatePath).toHaveBeenCalledWith("/brackets/bracket-1");
   });
 
-  it("mints and sets a new anonymous cookie identifier when ANONYMOUS_ALLOWED and no cookie exists yet, and uses it as Vote.anonymousVoterIdentifier", async () => {
+  it("mints and sets a new, signed anonymous cookie identifier when ANONYMOUS_ALLOWED and no cookie exists yet, and uses the raw id as Vote.anonymousVoterIdentifier", async () => {
     matchupFindUnique.mockResolvedValue(activeMatchup());
     cookieGet.mockReturnValue(undefined);
     voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
@@ -244,7 +259,7 @@ describe("castVote", () => {
 
     expect(cookieSet).toHaveBeenCalledWith(
       "voter_id",
-      "generated-anon-id",
+      signAnonymousVoterId("generated-anon-id"),
       expect.objectContaining({ httpOnly: true, path: "/" })
     );
     expect(voteCreate).toHaveBeenCalledWith({
@@ -257,9 +272,9 @@ describe("castVote", () => {
     });
   });
 
-  it("reuses an existing anonymous cookie identifier instead of minting a new one", async () => {
+  it("reuses an existing, validly signed anonymous cookie identifier instead of minting a new one", async () => {
     matchupFindUnique.mockResolvedValue(activeMatchup());
-    cookieGet.mockReturnValue({ value: "existing-anon-id" });
+    cookieGet.mockReturnValue({ value: signAnonymousVoterId("existing-anon-id") });
     voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
 
     await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
@@ -271,6 +286,50 @@ describe("castVote", () => {
         itemId: "item-a",
         userId: null,
         anonymousVoterIdentifier: "existing-anon-id",
+      },
+    });
+  });
+
+  it("mints a fresh, freshly signed identifier when the cookie's id has been hand-edited (signature no longer matches)", async () => {
+    matchupFindUnique.mockResolvedValue(activeMatchup());
+    // A cookie with a valid-*looking* signature suffix, but for a
+    // different id than the one now present - simulates a voter editing
+    // the httpOnly-but-still-swappable cookie value directly.
+    cookieGet.mockReturnValue({
+      value: "attacker-chosen-id.0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    });
+    voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+    await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+    expect(cookieSet).toHaveBeenCalledWith(
+      "voter_id",
+      signAnonymousVoterId("generated-anon-id"),
+      expect.objectContaining({ httpOnly: true, path: "/" })
+    );
+    expect(voteCreate).toHaveBeenCalledWith({
+      data: {
+        matchupId: "matchup-1",
+        itemId: "item-a",
+        userId: null,
+        anonymousVoterIdentifier: "generated-anon-id",
+      },
+    });
+  });
+
+  it("mints a fresh identifier for a pre-#35, unsigned cookie value (no signature suffix at all)", async () => {
+    matchupFindUnique.mockResolvedValue(activeMatchup());
+    cookieGet.mockReturnValue({ value: "old-unsigned-uuid" });
+    voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+    await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+    expect(voteCreate).toHaveBeenCalledWith({
+      data: {
+        matchupId: "matchup-1",
+        itemId: "item-a",
+        userId: null,
+        anonymousVoterIdentifier: "generated-anon-id",
       },
     });
   });
@@ -322,5 +381,71 @@ describe("castVote", () => {
     await expect(
       castVote("matchup-1", "item-a", initialVoteFormState, new FormData())
     ).rejects.toThrow("connection reset");
+  });
+
+  describe("rate limiting (issue #35)", () => {
+    it("rejects a vote once the identifier has hit the cap of recent Votes, without inserting", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteCount.mockResolvedValue(VOTE_RATE_LIMIT_MAX_VOTES);
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: RATE_LIMIT_ERROR, votedItemId: null });
+      expect(voteCreate).not.toHaveBeenCalled();
+    });
+
+    it("allows a vote when the identifier is still under the cap", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteCount.mockResolvedValue(VOTE_RATE_LIMIT_MAX_VOTES - 1);
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-a" });
+      expect(voteCreate).toHaveBeenCalled();
+    });
+
+    it("counts recent votes by the same voter key the vote itself is being recorded under", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      cookieGet.mockReturnValue({ value: signAnonymousVoterId("anon-voter-1") });
+      voteCreate.mockResolvedValue({ id: "vote-1", itemId: "item-a" });
+
+      await castVote("matchup-1", "item-a", initialVoteFormState, new FormData());
+
+      expect(voteCount).toHaveBeenCalledWith({
+        where: {
+          anonymousVoterIdentifier: "anon-voter-1",
+          createdAt: { gte: expect.any(Date) },
+        },
+      });
+    });
+
+    it("never even checks the rate limit when the voter already has a vote on this matchup (the proactive-existing-vote short circuit)", async () => {
+      matchupFindUnique.mockResolvedValue(activeMatchup());
+      getUser.mockResolvedValue({ data: { user: { id: "profile-1" } }, error: null });
+      voteFindFirst.mockResolvedValue({ id: "vote-existing", itemId: "item-b" });
+
+      const result = await castVote(
+        "matchup-1",
+        "item-a",
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: "item-b" });
+      expect(voteCount).not.toHaveBeenCalled();
+    });
   });
 });
