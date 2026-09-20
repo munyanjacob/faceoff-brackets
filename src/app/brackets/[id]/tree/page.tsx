@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 import { BracketTree } from "./bracket-tree";
 import { buildBracketTree } from "./bracket-tree-view-model";
+import { buildChampion, type ChampionState } from "./champion-view-model";
 
 /**
  * `/brackets/[id]/tree` - the full bracket-tree view (issue #30).
@@ -28,6 +29,19 @@ import { buildBracketTree } from "./bracket-tree-view-model";
  * (round 1 is only created at publish time - #18) - `buildBracketTree`
  * turns that empty list into an explicit "not published yet" message
  * rather than an empty/broken-looking tree.
+ *
+ * ## Champion section (issue #32)
+ *
+ * When `bracket.status === "COMPLETED"`, this also builds the champion
+ * section's state via `./champion-view-model.ts`'s `buildChampion` - see
+ * that file's top comment for why the final round can be read straight back
+ * out of the `bracket.rounds` list already fetched above (its last element,
+ * since rounds are fetched oldest-first) rather than a second Round query,
+ * and why only the final matchup's per-item `Vote` counts need an extra
+ * query, counted with the same `prisma.vote.count({ where: { matchupId,
+ * itemId } })` pattern `@/lib/rounds/evaluate-round.ts` uses to decide a
+ * winner. For any other `Bracket.status`, `buildChampion` returns
+ * `{ kind: "none" }` and no vote-count query runs at all.
  */
 export default async function BracketTreePage({
   params,
@@ -54,11 +68,58 @@ export default async function BracketTreePage({
   }
 
   const treeState = buildBracketTree(bracket.rounds);
+  const champion = await buildChampionForBracket(bracket.status, bracket.rounds);
 
   // Called directly as a plain function, not as a `<BracketTree ... />` JSX
   // element - same reasoning as every other page/presentational split in
   // this codebase (see e.g. `../matchup-voting.tsx`'s top comment): this
   // codebase's page tests introspect the return value via
   // `JSON.stringify`, which can't see into an unrendered child element.
-  return BracketTree({ bracketTitle: bracket.title, bracketId: id, treeState });
+  return BracketTree({ bracketTitle: bracket.title, bracketId: id, treeState, champion });
+}
+
+/**
+ * Issue #32's champion section, computed here rather than inline in the
+ * page function above so its "no query at all unless COMPLETED" early-out
+ * reads clearly. See `./champion-view-model.ts`'s top comment for the full
+ * reasoning behind reading the final round back out of `rounds` and why the
+ * champion-declaring matchup can't itself be a bye.
+ */
+async function buildChampionForBracket(
+  bracketStatus: string,
+  rounds: Array<{
+    matchups: Array<{
+      id: string;
+      itemA: { id: string; title: string; imageUrl: string | null } | null;
+      itemB: { id: string; title: string; imageUrl: string | null } | null;
+      winnerItemId: string | null;
+    }>;
+  }>
+): Promise<ChampionState> {
+  if (bracketStatus !== "COMPLETED" || rounds.length === 0) {
+    return buildChampion(bracketStatus, null, null);
+  }
+
+  const finalRound = rounds[rounds.length - 1];
+  const finalMatchup =
+    finalRound.matchups.find((matchup) => matchup.winnerItemId) ?? null;
+
+  if (!finalMatchup || !finalMatchup.itemA || !finalMatchup.itemB) {
+    // No decided matchup found (data anomaly), or a bye-decided one (see
+    // champion-view-model.ts - reasoned to be unreachable for a COMPLETED
+    // bracket's final matchup, handled gracefully anyway) - no vote tally
+    // to query either way.
+    return buildChampion(bracketStatus, finalMatchup, null);
+  }
+
+  const [itemAVotes, itemBVotes] = await Promise.all([
+    prisma.vote.count({
+      where: { matchupId: finalMatchup.id, itemId: finalMatchup.itemA.id },
+    }),
+    prisma.vote.count({
+      where: { matchupId: finalMatchup.id, itemId: finalMatchup.itemB.id },
+    }),
+  ]);
+
+  return buildChampion(bracketStatus, finalMatchup, { itemAVotes, itemBVotes });
 }

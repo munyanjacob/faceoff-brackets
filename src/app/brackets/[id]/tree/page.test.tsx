@@ -1,10 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const findUnique = vi.fn();
+const voteCount = vi.fn();
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bracket: { findUnique },
+    vote: { count: voteCount },
   },
 }));
 
@@ -24,6 +26,7 @@ function item(id: string) {
 describe("/brackets/[id]/tree page", () => {
   beforeEach(() => {
     findUnique.mockReset();
+    voteCount.mockReset();
   });
 
   it("queries the bracket by id with every round (oldest first) and each round's matchups in bracket order", async () => {
@@ -179,5 +182,100 @@ describe("/brackets/[id]/tree page", () => {
 
     expect(html).not.toContain("Not yet reached");
     expect((html.match(/Completed matchup/g) ?? []).length).toBe(3);
+  });
+
+  describe("champion section (issue #32)", () => {
+    it("shows the champion (image, title, final matchup's vote tally) for a COMPLETED bracket", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "COMPLETED",
+        rounds: [
+          {
+            roundNumber: 1,
+            matchups: [
+              { id: "m1", status: "COMPLETED", itemA: item("a"), itemB: item("b"), winnerItemId: "a" },
+              { id: "m2", status: "COMPLETED", itemA: item("c"), itemB: item("d"), winnerItemId: "d" },
+            ],
+          },
+          {
+            roundNumber: 2,
+            matchups: [
+              { id: "m3", status: "COMPLETED", itemA: item("a"), itemB: item("d"), winnerItemId: "a" },
+            ],
+          },
+        ],
+      });
+      voteCount.mockImplementation(({ where }: { where: { itemId: string } }) =>
+        Promise.resolve(where.itemId === "a" ? 12 : 5)
+      );
+
+      const result = await BracketTreePage({ params: params("b1") });
+      const html = JSON.stringify(result);
+
+      expect(voteCount).toHaveBeenCalledTimes(2);
+      expect(voteCount).toHaveBeenCalledWith({ where: { matchupId: "m3", itemId: "a" } });
+      expect(voteCount).toHaveBeenCalledWith({ where: { matchupId: "m3", itemId: "d" } });
+      expect(html).toContain("Champion");
+      expect(html).toContain("Item a");
+      expect(html).toContain("Item a: 12 votes - Item d: 5 votes");
+    });
+
+    it("never shows the champion section for DRAFT, SCHEDULED, or ACTIVE brackets", async () => {
+      for (const status of ["DRAFT", "SCHEDULED", "ACTIVE"]) {
+        findUnique.mockResolvedValue({
+          id: "b1",
+          title: "Best Movie",
+          status,
+          rounds:
+            status === "DRAFT"
+              ? []
+              : [
+                  {
+                    roundNumber: 1,
+                    matchups: [
+                      {
+                        id: "m1",
+                        status: "ACTIVE",
+                        itemA: item("a"),
+                        itemB: item("b"),
+                        winnerItemId: null,
+                      },
+                    ],
+                  },
+                ],
+        });
+
+        const result = await BracketTreePage({ params: params("b1") });
+        const html = JSON.stringify(result);
+
+        expect(html).not.toContain("aria-label\":\"Champion\"");
+        expect(voteCount).not.toHaveBeenCalled();
+      }
+    });
+
+    it("singularizes the vote-count wording for exactly 1 vote", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "COMPLETED",
+        rounds: [
+          {
+            roundNumber: 1,
+            matchups: [
+              { id: "m1", status: "COMPLETED", itemA: item("a"), itemB: item("b"), winnerItemId: "a" },
+            ],
+          },
+        ],
+      });
+      voteCount.mockImplementation(({ where }: { where: { itemId: string } }) =>
+        Promise.resolve(where.itemId === "a" ? 1 : 0)
+      );
+
+      const result = await BracketTreePage({ params: params("b1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain("Item a: 1 vote - Item b: 0 votes");
+    });
   });
 });
