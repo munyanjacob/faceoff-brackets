@@ -4,8 +4,9 @@ import { BracketList } from "./bracket-list";
 import { toBracketRow } from "./bracket-view-model";
 
 /**
- * `/dashboard` - the signed-in creator's own brackets, newest first, or an
- * explicit empty-state message when they have none yet (issue #8).
+ * `/dashboard` - the signed-in creator's own brackets, newest first within
+ * each status, grouped into the four dashboard sections from issue #33
+ * (Drafts, Scheduled, Active, Completed - see `<BracketList>`).
  *
  * The signed-in/signed-out check itself lives in `./layout.tsx` (#6) - by
  * the time this component renders, `supabase.auth.getUser()` is guaranteed
@@ -18,7 +19,11 @@ import { toBracketRow } from "./bracket-view-model";
  * (the Supabase auth user id - see #7's sync trigger), so a visitor only
  * ever sees their own brackets, never another creator's. `rounds` is
  * selected (not the full relation) since `toBracketRow`/
- * `currentRoundNumber` only need each round's `roundNumber`.
+ * `currentRoundNumber` only need each round's `roundNumber`. The query
+ * itself stays a single flat, newest-first fetch of every status - grouping
+ * into sections happens client-side (in `<BracketList>`/
+ * `groupBracketsByStatus`), which also preserves that same newest-first
+ * order within each section.
  */
 export default async function DashboardPage() {
   const supabase = await createClient();
