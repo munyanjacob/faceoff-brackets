@@ -103,5 +103,10 @@ export default async function BracketMatchupVotingPage({
   // `../../../discover/page.tsx`'s call to `DiscoveryGroups`: this
   // codebase's page tests introspect the return value via
   // `JSON.stringify`, which can't see into an unrendered child element.
-  return MatchupVoting({ bracketTitle: bracket.title, votingState, voterContext });
+  return MatchupVoting({
+    bracketTitle: bracket.title,
+    bracketId: id,
+    votingState,
+    voterContext,
+  });
 }
