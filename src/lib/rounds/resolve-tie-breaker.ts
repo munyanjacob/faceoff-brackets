@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { determineWinner } from "@/lib/bracket-engine/determine-winner";
 import { evaluateRound } from "@/lib/rounds/evaluate-round";
-import { MatchupStatus } from "@/generated/prisma/enums";
+import { MatchupStatus, VotePhase } from "@/generated/prisma/enums";
 
 /**
  * Issue #29: resolves a single `Matchup` that is (or, a moment ago, was)
@@ -11,27 +11,27 @@ import { MatchupStatus } from "@/generated/prisma/enums";
  * this only detects/resolves an *ended* one, found by
  * `findExpiredTieBreakers` in this same directory.
  *
- * Deriving "when did the tie-breaker start?" without a schema change:
- * `Matchup` (see `prisma/schema.prisma`) has `tieBreakerEndsAt` but no
- * separate "tie-breaker started at" column, and AGENTS.md requires asking
- * before changing the schema shape - not done here. `evaluateRound` sets
- * `tieBreakerEndsAt` to `now + max(25% of the Round's durationMinutes, 60
- * minutes)` at the moment it moves a Matchup to `TIE_BREAKER` (see that
- * file's tie-breaker branch). Since the Round's `durationMinutes` never
- * changes after the Round is created, that same formula can be run in
- * reverse: `tieBreakerStartedAt = tieBreakerEndsAt - max(25% of
- * durationMinutes, 60 minutes)` reconstructs exactly the timestamp
- * `evaluateRound` used as "now" when it entered the tie-breaker. This is
- * inferred rather than stored directly - see the issue #29 comment for the
- * same reasoning and a note suggesting an explicit
- * `tieBreakerStartedAt` column would be more robust (e.g. against a future
- * change to the duration formula) if a schema change is ever approved.
+ * Only `Vote` rows with `phase = TIE_BREAKER` for this matchup count toward
+ * the tie-breaker's tally - votes cast during the original round stay in
+ * the database (for history/comments) but are excluded, per #29's
+ * acceptance criteria. This is why `resolveTieBreaker` re-tallies votes
+ * itself rather than reusing `evaluateRound`'s unfiltered `vote.count`
+ * calls.
  *
- * Only `Vote` rows with `createdAt >= tieBreakerStartedAt` count toward the
- * tie-breaker's tally - votes cast during the original round stay in the
- * database (for history/comments) but are excluded, per #29's acceptance
- * criteria. This is why `resolveTieBreaker` re-tallies votes itself rather
- * than reusing `evaluateRound`'s unfiltered `vote.count` calls.
+ * Issue #41: this used to reconstruct "when did the tie-breaker start?"
+ * from `tieBreakerEndsAt` and the Round's `durationMinutes` (there was no
+ * column recording it directly), and filtered on `Vote.createdAt` against
+ * that reconstructed timestamp. Now that `Vote.phase` exists and is the
+ * authoritative record of which round/window a vote belongs to - set by
+ * `../../app/brackets/[id]/vote-actions.ts`'s `castVote` from the
+ * matchup's status at the moment the vote was cast, not inferred
+ * after the fact - the tally below filters on `phase = TIE_BREAKER`
+ * directly instead. This also means a voter who already voted while the
+ * matchup was `ACTIVE` and then cast an independent revote once it became
+ * `TIE_BREAKER` (issue #41) has only their `TIE_BREAKER`-phase vote counted
+ * here; their original vote persists in the table (per #29's "kept for
+ * history" treatment) but is excluded from this tally, exactly like any
+ * other `ORIGINAL`-phase vote.
  *
  * Outcome, from #19's `determineWinner` applied to that filtered tally:
  * - A clear "A"/"B" result sets `winnerItemId` and `status = COMPLETED`.
@@ -65,7 +65,6 @@ export async function resolveTieBreaker(
 ): Promise<void> {
   const matchup = await prisma.matchup.findUnique({
     where: { id: matchupId },
-    include: { round: true },
   });
 
   if (!matchup) {
@@ -88,30 +87,22 @@ export async function resolveTieBreaker(
     );
   }
 
-  // See the doc comment above for why this reconstructs, rather than reads,
-  // the tie-breaker's start time - and why it must reuse this exact
-  // formula, matching evaluateRound.ts's tie-breaker branch.
-  const tieBreakerMs = Math.max(
-    matchup.round.durationMinutes * 60_000 * 0.25,
-    60 * 60_000
-  );
-  const tieBreakerStartedAt = new Date(
-    matchup.tieBreakerEndsAt.getTime() - tieBreakerMs
-  );
-
+  // Issue #41: `phase` is the authoritative record of which round/window a
+  // vote belongs to - see the doc comment above. No timestamp
+  // reconstruction needed.
   const [votesForA, votesForB] = await Promise.all([
     prisma.vote.count({
       where: {
         matchupId: matchup.id,
         itemId: matchup.itemAId,
-        createdAt: { gte: tieBreakerStartedAt },
+        phase: VotePhase.TIE_BREAKER,
       },
     }),
     prisma.vote.count({
       where: {
         matchupId: matchup.id,
         itemId: matchup.itemBId,
-        createdAt: { gte: tieBreakerStartedAt },
+        phase: VotePhase.TIE_BREAKER,
       },
     }),
   ]);

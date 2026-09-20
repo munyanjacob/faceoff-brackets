@@ -126,7 +126,15 @@ describe.runIf(hasLiveDatabase)(
       matchupId: string,
       itemId: string,
       count: number,
-      createdAt?: Date
+      createdAt?: Date,
+      // Issue #41: which VotePhase these seeded Vote rows belong to -
+      // defaults to "ORIGINAL" (the schema's own column default), same as
+      // every non-tie-breaker vote a real voter would ever cast. Passed
+      // explicitly as "TIE_BREAKER" below for votes meant to land inside a
+      // tie-breaker window, since resolveTieBreaker's tally now filters on
+      // this column directly rather than reconstructing a time window from
+      // `createdAt`.
+      phase: "ORIGINAL" | "TIE_BREAKER" = "ORIGINAL"
     ) {
       for (let i = 0; i < count; i++) {
         await prisma.vote.create({
@@ -134,6 +142,7 @@ describe.runIf(hasLiveDatabase)(
             matchupId,
             itemId,
             anonymousVoterIdentifier: randomUUID(),
+            phase,
             ...(createdAt ? { createdAt } : {}),
           },
         });
@@ -382,10 +391,9 @@ describe.runIf(hasLiveDatabase)(
       const { round, matchup, tieBreakerStartedAt } =
         await makeExpiredTieBreaker(bracket.id, 1, items[0].id, items[1].id);
 
-      // Votes cast during the original round, BEFORE the tie-breaker
-      // started - must be excluded from the tie-breaker tally. Heavily
-      // favors item B, so if these leaked into the tally item B would win
-      // instead of item A.
+      // An ORIGINAL-phase vote from the original round - must be excluded
+      // from the tie-breaker tally. Heavily favors item B, so if this
+      // leaked into the tally item B would win instead of item A.
       await vote(
         matchup.id,
         items[1].id,
@@ -393,19 +401,20 @@ describe.runIf(hasLiveDatabase)(
         new Date(tieBreakerStartedAt.getTime() - 60_000)
       );
 
-      // Votes cast during the tie-breaker window - item A decisively wins
-      // these.
+      // TIE_BREAKER-phase votes - item A decisively wins these.
       await vote(
         matchup.id,
         items[0].id,
         3,
-        new Date(tieBreakerStartedAt.getTime() + 60_000)
+        new Date(tieBreakerStartedAt.getTime() + 60_000),
+        "TIE_BREAKER"
       );
       await vote(
         matchup.id,
         items[1].id,
         1,
-        new Date(tieBreakerStartedAt.getTime() + 60_000)
+        new Date(tieBreakerStartedAt.getTime() + 60_000),
+        "TIE_BREAKER"
       );
 
       const response = await GET(authedRequest());
@@ -446,13 +455,15 @@ describe.runIf(hasLiveDatabase)(
         matchup.id,
         items[0].id,
         2,
-        new Date(tieBreakerStartedAt.getTime() + 60_000)
+        new Date(tieBreakerStartedAt.getTime() + 60_000),
+        "TIE_BREAKER"
       );
       await vote(
         matchup.id,
         items[1].id,
         2,
-        new Date(tieBreakerStartedAt.getTime() + 60_000)
+        new Date(tieBreakerStartedAt.getTime() + 60_000),
+        "TIE_BREAKER"
       );
 
       const response = await GET(authedRequest());
