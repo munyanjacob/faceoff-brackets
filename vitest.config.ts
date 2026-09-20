@@ -13,6 +13,12 @@ export default defineConfig(({ mode }) => ({
   },
   test: {
     environment: "node",
+    // Parallel-agent git worktrees live under .worktrees/ (see
+    // .gitignore) as separate checkouts of other branches, each with its
+    // own dependencies/modules. Without this exclude, running tests from
+    // this checkout recurses into them and fails on imports (e.g.
+    // `@/lib/prisma`) that don't exist on this branch.
+    exclude: ["**/node_modules/**", "**/.worktrees/**"],
     // Inject only the public Supabase vars tests actually need into
     // process.env (e.g. the getUser() check in
     // src/lib/supabase/get-user.signed-out.test.ts), rather than the full

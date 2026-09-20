@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Parallel-agent git worktrees (see .gitignore) - separate checkouts
+    // of other branches with their own dependencies.
+    ".worktrees/**",
   ]),
 ]);
 
