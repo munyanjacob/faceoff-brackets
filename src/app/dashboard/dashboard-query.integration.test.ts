@@ -119,17 +119,19 @@ describe.runIf(hasLiveDatabase)(
       await prisma.$disconnect();
     });
 
-    it("renders the explicit empty-state message for a creator with no brackets yet", async () => {
+    it("renders an explicit 'none yet' message in every section for a creator with no brackets yet", async () => {
       currentUserId = ownCreatorId;
 
       const result = await DashboardPage();
 
       const html = JSON.stringify(result);
-      expect(html).toContain("You haven");
-      expect(html).toMatch(/created any brackets yet/);
+      expect(html).toContain("No drafts yet.");
+      expect(html).toContain("No scheduled yet.");
+      expect(html).toContain("No active yet.");
+      expect(html).toContain("No completed yet.");
     });
 
-    it("shows only the signed-in creator's own brackets, newest first, with status/round/date", async () => {
+    it("shows only the signed-in creator's own brackets, grouped by status, newest first within each group", async () => {
       currentUserId = ownCreatorId;
 
       const older = await prisma.bracket.create({
@@ -145,7 +147,33 @@ describe.runIf(hasLiveDatabase)(
       });
       bracketIds.push(older.id);
 
-      const newer = await prisma.bracket.create({
+      const newerDraft = await prisma.bracket.create({
+        data: {
+          creatorId: ownCreatorId,
+          title: "Best Podcast",
+          visibility: "PUBLIC",
+          votingRequirement: "ANONYMOUS_ALLOWED",
+          defaultRoundDurationMinutes: 60,
+          status: "DRAFT",
+          createdAt: new Date("2026-01-15T12:00:00.000Z"),
+        },
+      });
+      bracketIds.push(newerDraft.id);
+
+      const scheduled = await prisma.bracket.create({
+        data: {
+          creatorId: ownCreatorId,
+          title: "Best Song",
+          visibility: "PUBLIC",
+          votingRequirement: "ANONYMOUS_ALLOWED",
+          defaultRoundDurationMinutes: 60,
+          status: "SCHEDULED",
+          createdAt: new Date("2026-01-20T12:00:00.000Z"),
+        },
+      });
+      bracketIds.push(scheduled.id);
+
+      const active = await prisma.bracket.create({
         data: {
           creatorId: ownCreatorId,
           title: "Best Movie",
@@ -156,18 +184,31 @@ describe.runIf(hasLiveDatabase)(
           createdAt: new Date("2026-02-01T12:00:00.000Z"),
         },
       });
-      bracketIds.push(newer.id);
+      bracketIds.push(active.id);
 
-      // `newer`'s current round is the highest of its Round rows.
+      // `active`'s current round is the highest of its Round rows.
       const round = await prisma.round.create({
         data: {
-          bracketId: newer.id,
+          bracketId: active.id,
           roundNumber: 2,
           durationMinutes: 60,
           status: "ACTIVE",
         },
       });
       roundIds.push(round.id);
+
+      const completed = await prisma.bracket.create({
+        data: {
+          creatorId: ownCreatorId,
+          title: "Best Game",
+          visibility: "PUBLIC",
+          votingRequirement: "ANONYMOUS_ALLOWED",
+          defaultRoundDurationMinutes: 60,
+          status: "COMPLETED",
+          createdAt: new Date("2026-03-01T12:00:00.000Z"),
+        },
+      });
+      bracketIds.push(completed.id);
 
       // Another creator's bracket - must never appear for `ownCreatorId`.
       const otherBracket = await prisma.bracket.create({
@@ -186,23 +227,35 @@ describe.runIf(hasLiveDatabase)(
       const html = JSON.stringify(result);
 
       expect(html).toContain("Best Sitcom");
+      expect(html).toContain("Best Podcast");
+      expect(html).toContain("Best Song");
       expect(html).toContain("Best Movie");
+      expect(html).toContain("Best Game");
       expect(html).not.toContain("Someone Elses Bracket");
 
       expect(html).toContain("DRAFT");
+      expect(html).toContain("SCHEDULED");
       expect(html).toContain("ACTIVE");
-      // `newer` has a Round row (roundNumber 2); `older` has none, so its
-      // current round is the "-" placeholder.
+      expect(html).toContain("COMPLETED");
+      // `active` has a Round row (roundNumber 2); the others have none, so
+      // their current round is the "-" placeholder.
       expect(html).toMatch(/"-"/);
 
       expect(html).toContain("January 1, 2026");
-      expect(html).toContain("February 1, 2026");
+      expect(html).toContain("March 1, 2026");
 
-      // Newest-first: "Best Movie" (Feb) must be rendered before
-      // "Best Sitcom" (Jan).
-      expect(html.indexOf("Best Movie")).toBeLessThan(
+      // Newest-first within the DRAFT section: "Best Podcast" (Jan 15)
+      // before "Best Sitcom" (Jan 1).
+      expect(html.indexOf("Best Podcast")).toBeLessThan(
         html.indexOf("Best Sitcom")
       );
+
+      // Drafts/scheduled link to the edit flow; active/completed link to
+      // the (placeholder) public bracket view.
+      expect(html).toContain(`/dashboard/brackets/${older.id}/edit`);
+      expect(html).toContain(`/dashboard/brackets/${scheduled.id}/edit`);
+      expect(html).toContain(`/brackets/${active.id}`);
+      expect(html).toContain(`/brackets/${completed.id}`);
     });
   }
 );

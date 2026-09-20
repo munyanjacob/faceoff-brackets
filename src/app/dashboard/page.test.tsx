@@ -37,17 +37,19 @@ describe("/dashboard page", () => {
     });
   });
 
-  it("renders the explicit empty-state message when the creator has zero brackets", async () => {
+  it("renders an explicit 'none yet' message for every section when the creator has zero brackets", async () => {
     findMany.mockResolvedValue([]);
 
     const result = await DashboardPage();
 
     const html = JSON.stringify(result);
-    expect(html).toContain("You haven");
-    expect(html).toMatch(/created any brackets yet/);
+    expect(html).toContain("No drafts yet.");
+    expect(html).toContain("No scheduled yet.");
+    expect(html).toContain("No active yet.");
+    expect(html).toContain("No completed yet.");
   });
 
-  it("maps queried brackets through the view-model and renders them newest-first", async () => {
+  it("maps queried brackets through the view-model and groups them into their status sections", async () => {
     findMany.mockResolvedValue([
       {
         id: "b1",
@@ -75,5 +77,12 @@ describe("/dashboard page", () => {
     expect(html).toContain("ACTIVE");
     expect(html).toContain("September 19, 2026");
     expect(html).toContain("September 1, 2026");
+    // The draft links to its edit flow; the active bracket links to the
+    // (placeholder) public bracket view.
+    expect(html).toContain("/dashboard/brackets/b1/edit");
+    expect(html).toContain("/brackets/b2");
+    // The DRAFT bracket's own section has no entries left over.
+    expect(html).toContain("No scheduled yet.");
+    expect(html).toContain("No completed yet.");
   });
 });

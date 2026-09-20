@@ -69,3 +69,72 @@ export function toBracketRow(bracket: BracketWithRounds): BracketRow {
     createdAt: formatCreatedAt(bracket.createdAt),
   };
 }
+
+// The four `Bracket.status` values (`prisma/schema.prisma`'s `BracketStatus`
+// enum), in the order issue #33 lists them for the dashboard's sections.
+export type BracketStatusValue = "DRAFT" | "SCHEDULED" | "ACTIVE" | "COMPLETED";
+
+export type DashboardSection = {
+  status: BracketStatusValue;
+  heading: string;
+};
+
+export const DASHBOARD_SECTIONS: readonly DashboardSection[] = [
+  { status: "DRAFT", heading: "Drafts" },
+  { status: "SCHEDULED", heading: "Scheduled" },
+  { status: "ACTIVE", heading: "Active" },
+  { status: "COMPLETED", heading: "Completed" },
+];
+
+function isBracketStatusValue(status: string): status is BracketStatusValue {
+  return DASHBOARD_SECTIONS.some((section) => section.status === status);
+}
+
+/**
+ * Partitions a creator's brackets into the four dashboard sections (issue
+ * #33), keyed by the raw `BracketStatus` enum value, each preserving the
+ * caller's original ordering (`page.tsx` queries newest-first).
+ *
+ * A status that isn't one of the four known values is dropped rather than
+ * thrown on - defensive only, since `Bracket.status` is a Postgres enum and
+ * every row Prisma returns is guaranteed to be one of the four.
+ */
+export function groupBracketsByStatus(
+  brackets: BracketRow[]
+): Record<BracketStatusValue, BracketRow[]> {
+  const groups: Record<BracketStatusValue, BracketRow[]> = {
+    DRAFT: [],
+    SCHEDULED: [],
+    ACTIVE: [],
+    COMPLETED: [],
+  };
+
+  for (const bracket of brackets) {
+    if (isBracketStatusValue(bracket.status)) {
+      groups[bracket.status].push(bracket);
+    }
+  }
+
+  return groups;
+}
+
+const EDIT_FLOW_STATUSES: readonly BracketStatusValue[] = ["DRAFT", "SCHEDULED"];
+
+/**
+ * Where a dashboard row links to, per issue #33: a draft or scheduled
+ * bracket links to its edit flow (#10-#16); an active or completed bracket
+ * links to the public bracket view.
+ *
+ * That public view route (#21/#30) doesn't exist yet, so `/brackets/[id]`
+ * is a placeholder link target for whoever builds it - the same convention
+ * #10's engineer used for its own placeholder `/dashboard/brackets/[id]/edit`
+ * page ahead of #11-#14.
+ */
+export function bracketLinkHref(
+  bracket: Pick<BracketRow, "id" | "status">
+): string {
+  if (isBracketStatusValue(bracket.status) && EDIT_FLOW_STATUSES.includes(bracket.status)) {
+    return `/dashboard/brackets/${bracket.id}/edit`;
+  }
+  return `/brackets/${bracket.id}`;
+}
