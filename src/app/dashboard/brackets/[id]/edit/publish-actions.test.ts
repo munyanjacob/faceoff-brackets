@@ -4,7 +4,20 @@ const getUser = vi.fn();
 const bracketFindFirst = vi.fn();
 const bracketUpdate = vi.fn();
 const itemCount = vi.fn();
+const itemFindMany = vi.fn();
+const roundCreate = vi.fn();
 const revalidatePath = vi.fn();
+
+// `$transaction` is exercised with an interactive-transaction callback in
+// `publishBracket`, the same shape Prisma itself calls with a `tx` client -
+// here `tx` is just the same mocked `bracket`/`round`, so assertions below
+// can keep asserting against `bracketUpdate`/`roundCreate` directly.
+const transaction = vi.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
+  callback({
+    bracket: { update: bracketUpdate },
+    round: { create: roundCreate },
+  })
+);
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({
@@ -15,7 +28,9 @@ vi.mock("@/lib/supabase/server", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     bracket: { findFirst: bracketFindFirst, update: bracketUpdate },
-    bracketItem: { count: itemCount },
+    bracketItem: { count: itemCount, findMany: itemFindMany },
+    round: { create: roundCreate },
+    $transaction: transaction,
   },
 }));
 
@@ -39,12 +54,21 @@ describe("publishBracket", () => {
     bracketFindFirst.mockReset();
     bracketUpdate.mockReset();
     itemCount.mockReset();
+    itemFindMany.mockReset();
+    roundCreate.mockReset();
+    transaction.mockClear();
     revalidatePath.mockReset();
 
     getUser.mockResolvedValue({
       data: { user: { id: "creator-1" } },
       error: null,
     });
+    // A safe default for tests that don't care about the exact round/matchup
+    // shape - just needs >= 2 items so `buildRoundOnePlan` doesn't throw.
+    itemFindMany.mockResolvedValue([
+      { id: "item-1" },
+      { id: "item-2" },
+    ]);
   });
 
   afterEach(() => {
@@ -57,6 +81,8 @@ describe("publishBracket", () => {
       creatorId: "creator-1",
       status: "DRAFT",
       scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
     });
     itemCount.mockResolvedValue(2);
 
@@ -77,6 +103,8 @@ describe("publishBracket", () => {
       creatorId: "creator-1",
       status: "DRAFT",
       scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
     });
     itemCount.mockResolvedValue(2);
 
@@ -91,7 +119,30 @@ describe("publishBracket", () => {
     });
   });
 
-  it("publishes to ACTIVE and sets publishedAt to now when the start choice was immediate", async () => {
+  it("fetches items in the same order (createdAt ascending) the preview uses, so pairings can never disagree", async () => {
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+      scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+    });
+    itemCount.mockResolvedValue(2);
+
+    await publishBracket(
+      "bracket-1",
+      initialPublishFormState,
+      new FormData()
+    );
+
+    expect(itemFindMany).toHaveBeenCalledWith({
+      where: { bracketId: "bracket-1" },
+      orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("publishes to ACTIVE and sets publishedAt to now when the start choice was immediate, creating an ACTIVE Round with ACTIVE Matchups", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 
@@ -100,8 +151,11 @@ describe("publishBracket", () => {
       creatorId: "creator-1",
       status: "DRAFT",
       scheduledStartAt: null,
+      defaultRoundDurationMinutes: 45,
+      roundDurationOverrides: null,
     });
     itemCount.mockResolvedValue(2);
+    itemFindMany.mockResolvedValue([{ id: "item-1" }, { id: "item-2" }]);
 
     const result = await publishBracket(
       "bracket-1",
@@ -116,13 +170,35 @@ describe("publishBracket", () => {
         publishedAt: new Date("2026-01-01T00:00:00.000Z"),
       },
     });
+    expect(roundCreate).toHaveBeenCalledWith({
+      data: {
+        bracketId: "bracket-1",
+        roundNumber: 1,
+        durationMinutes: 45,
+        status: "ACTIVE",
+        startsAt: new Date("2026-01-01T00:00:00.000Z"),
+        endsAt: new Date("2026-01-01T00:45:00.000Z"),
+        matchups: {
+          create: [
+            {
+              itemAId: "item-1",
+              itemBId: "item-2",
+              winnerItemId: null,
+              status: "ACTIVE",
+            },
+          ],
+        },
+      },
+    });
+    // The Bracket update and Round creation happen inside one transaction.
+    expect(transaction).toHaveBeenCalledTimes(1);
     expect(revalidatePath).toHaveBeenCalledWith(
       "/dashboard/brackets/bracket-1/edit"
     );
     expect(result).toEqual({ error: null });
   });
 
-  it("publishes to SCHEDULED and sets publishedAt to now when a future start time was chosen", async () => {
+  it("publishes to SCHEDULED and sets publishedAt to now when a future start time was chosen, creating a PENDING Round with PENDING Matchups and no starts/ends", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 
@@ -131,8 +207,11 @@ describe("publishBracket", () => {
       creatorId: "creator-1",
       status: "DRAFT",
       scheduledStartAt: new Date("2026-06-01T09:00:00.000Z"),
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
     });
-    itemCount.mockResolvedValue(3);
+    itemCount.mockResolvedValue(2);
+    itemFindMany.mockResolvedValue([{ id: "item-1" }, { id: "item-2" }]);
 
     const result = await publishBracket(
       "bracket-1",
@@ -147,7 +226,123 @@ describe("publishBracket", () => {
         publishedAt: new Date("2026-01-01T00:00:00.000Z"),
       },
     });
+    expect(roundCreate).toHaveBeenCalledWith({
+      data: {
+        bracketId: "bracket-1",
+        roundNumber: 1,
+        durationMinutes: 60,
+        status: "PENDING",
+        startsAt: null,
+        endsAt: null,
+        matchups: {
+          create: [
+            {
+              itemAId: "item-1",
+              itemBId: "item-2",
+              winnerItemId: null,
+              status: "PENDING",
+            },
+          ],
+        },
+      },
+    });
     expect(result).toEqual({ error: null });
+  });
+
+  it("creates a bye Matchup (item_b_id null, winner already set, COMPLETED) regardless of immediate vs. scheduled start", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    // 3 items -> next power of two is 4, so 1 bye + 1 real matchup.
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+      scheduledStartAt: new Date("2026-06-01T09:00:00.000Z"),
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: null,
+    });
+    itemCount.mockResolvedValue(3);
+    itemFindMany.mockResolvedValue([
+      { id: "item-1" },
+      { id: "item-2" },
+      { id: "item-3" },
+    ]);
+
+    await publishBracket("bracket-1", initialPublishFormState, new FormData());
+
+    expect(roundCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        matchups: {
+          create: [
+            {
+              itemAId: "item-1",
+              itemBId: null,
+              winnerItemId: "item-1",
+              status: "COMPLETED",
+            },
+            {
+              itemAId: "item-2",
+              itemBId: "item-3",
+              winnerItemId: null,
+              status: "PENDING",
+            },
+          ],
+        },
+      }),
+    });
+  });
+
+  it("uses Bracket.round_duration_overrides['1'] for round 1's duration when present", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+      scheduledStartAt: null,
+      defaultRoundDurationMinutes: 60,
+      roundDurationOverrides: { "1": 15 },
+    });
+    itemCount.mockResolvedValue(2);
+    itemFindMany.mockResolvedValue([{ id: "item-1" }, { id: "item-2" }]);
+
+    await publishBracket("bracket-1", initialPublishFormState, new FormData());
+
+    expect(roundCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        durationMinutes: 15,
+        endsAt: new Date("2026-01-01T00:15:00.000Z"),
+      }),
+    });
+  });
+
+  it("falls back to Bracket.default_round_duration_minutes when no round 1 override is present", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+
+    bracketFindFirst.mockResolvedValue({
+      id: "bracket-1",
+      creatorId: "creator-1",
+      status: "DRAFT",
+      scheduledStartAt: null,
+      defaultRoundDurationMinutes: 90,
+      // An override for round 2 exists but round 1 has none - should still
+      // fall back to the default, not accidentally pick up round 2's value.
+      roundDurationOverrides: { "2": 15 },
+    });
+    itemCount.mockResolvedValue(2);
+    itemFindMany.mockResolvedValue([{ id: "item-1" }, { id: "item-2" }]);
+
+    await publishBracket("bracket-1", initialPublishFormState, new FormData());
+
+    expect(roundCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        durationMinutes: 90,
+        endsAt: new Date("2026-01-01T01:30:00.000Z"),
+      }),
+    });
   });
 
   it("blocks publishing with a clear message (not a server error) when there are fewer than 2 items", async () => {
@@ -169,6 +364,9 @@ describe("publishBracket", () => {
       error: "Add at least 2 items before publishing this bracket.",
     });
     expect(bracketUpdate).not.toHaveBeenCalled();
+    expect(itemFindMany).not.toHaveBeenCalled();
+    expect(roundCreate).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("blocks publishing with a clear message when there are zero items", async () => {
@@ -190,6 +388,9 @@ describe("publishBracket", () => {
       error: "Add at least 2 items before publishing this bracket.",
     });
     expect(bracketUpdate).not.toHaveBeenCalled();
+    expect(itemFindMany).not.toHaveBeenCalled();
+    expect(roundCreate).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
   });
 
   it("404s instead of publishing a bracket that isn't the signed-in creator's", async () => {
