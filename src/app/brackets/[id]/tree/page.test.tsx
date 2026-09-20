@@ -128,6 +128,8 @@ describe("/brackets/[id]/tree page", () => {
 
     expect(html).toContain("Item a advances on a bye");
     expect(html).toContain("advances automatically");
+    // Issue #31: a bye cell links into the completed-matchup result view too.
+    expect(html).toContain('"href":"/brackets/b1/matchups/bye-1/result"');
   });
 
   it("shows a completed matchup's winner distinctly from its loser", async () => {
@@ -151,6 +153,8 @@ describe("/brackets/[id]/tree page", () => {
     expect(html).toContain("font-semibold text-green-700");
     expect(html.indexOf("Item b")).toBeLessThan(html.indexOf("Item a"));
     expect(html).toContain("line-through");
+    // Issue #31: clicking a completed matchup opens its result view.
+    expect(html).toContain('"href":"/brackets/b1/matchups/m1/result"');
   });
 
   it("renders a completed bracket (every round already persisted) with no leftover placeholder columns", async () => {

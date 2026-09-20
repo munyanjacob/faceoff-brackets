@@ -27,6 +27,15 @@ import type { BracketTreeState, MatchupCell, RoundColumn, TreeItem } from "./bra
  * Issue #32 (the champion banner, out of scope here) slots in right after
  * the columns, once the final round's one matchup is `COMPLETED` - left as
  * a comment marker below rather than built now.
+ *
+ * Issue #31: a `"completed"` or `"bye"` cell is now a link into
+ * `/brackets/[id]/matchups/[matchupId]/result` - the full record of that
+ * decided matchup (both items, the winner marked, the final vote tally,
+ * any comments; a bye or tie-breaker labeled as such rather than shown like
+ * a clean majority win). `bracketId` is threaded down through `TreeGrid`/
+ * `RoundColumnView` to `MatchupCellView` for exactly that link - every other
+ * cell kind (`"active"`, `"pending"`, `"upcoming"`) has nothing decided yet
+ * to link to, so they're unchanged, plain (non-link) elements.
  */
 export function BracketTree({
   bracketTitle,
@@ -47,7 +56,7 @@ export function BracketTree({
       </div>
       {treeState.kind === "not-published"
         ? StatusMessage({ message: treeState.message })
-        : TreeGrid({ rounds: treeState.rounds })}
+        : TreeGrid({ bracketId, rounds: treeState.rounds })}
     </main>
   );
 }
@@ -60,7 +69,7 @@ function StatusMessage({ message }: { message: string }) {
   );
 }
 
-function TreeGrid({ rounds }: { rounds: RoundColumn[] }) {
+function TreeGrid({ bracketId, rounds }: { bracketId: string; rounds: RoundColumn[] }) {
   return (
     <div className="overflow-x-auto">
       <div
@@ -68,14 +77,14 @@ function TreeGrid({ rounds }: { rounds: RoundColumn[] }) {
         aria-label="Bracket rounds"
         className="flex min-w-max gap-8 p-2"
       >
-        {rounds.map((round) => RoundColumnView({ round }))}
+        {rounds.map((round) => RoundColumnView({ bracketId, round }))}
       </div>
       {/* Issue #32's champion banner slots in here, once it exists. */}
     </div>
   );
 }
 
-function RoundColumnView({ round }: { round: RoundColumn }) {
+function RoundColumnView({ bracketId, round }: { bracketId: string; round: RoundColumn }) {
   return (
     <div
       key={round.roundNumber}
@@ -88,14 +97,14 @@ function RoundColumnView({ round }: { round: RoundColumn }) {
       </h2>
       <ul className="flex h-full flex-col justify-around gap-6">
         {round.matchups.map((cell) => (
-          <li key={cell.id}>{MatchupCellView({ cell })}</li>
+          <li key={cell.id}>{MatchupCellView({ bracketId, cell })}</li>
         ))}
       </ul>
     </div>
   );
 }
 
-function MatchupCellView({ cell }: { cell: MatchupCell }) {
+function MatchupCellView({ bracketId, cell }: { bracketId: string; cell: MatchupCell }) {
   if (cell.kind === "upcoming") {
     return (
       <div
@@ -108,14 +117,19 @@ function MatchupCellView({ cell }: { cell: MatchupCell }) {
   }
 
   if (cell.kind === "bye") {
+    // A plain <a>, not next/link's <Link> - same reasoning as
+    // ../matchup-index.tsx's top comment: <Link>'s default export is a
+    // circular forwardRef object that would make JSON.stringify(...) throw,
+    // and this codebase's page tests rely on that introspection throughout.
     return (
-      <div
+      <a
+        href={`/brackets/${bracketId}/matchups/${cell.id}/result`}
         aria-label={`${cell.advancing.title} advances on a bye`}
-        className="flex flex-col gap-1 rounded border border-gray-200 bg-gray-50 p-2 text-sm"
+        className="flex flex-col gap-1 rounded border border-gray-200 bg-gray-50 p-2 text-sm hover:border-gray-400"
       >
         {ItemLine({ item: cell.advancing })}
         <span className="text-xs text-gray-500">(bye - advances automatically)</span>
-      </div>
+      </a>
     );
   }
 
@@ -148,11 +162,13 @@ function MatchupCellView({ cell }: { cell: MatchupCell }) {
     );
   }
 
-  // "completed"
+  // "completed" - issue #31: a clickable link into the full result view,
+  // same non-<Link> reasoning as the "bye" branch above.
   return (
-    <div
+    <a
+      href={`/brackets/${bracketId}/matchups/${cell.id}/result`}
       aria-label="Completed matchup"
-      className="flex flex-col gap-1 rounded border border-gray-200 p-2 text-sm"
+      className="flex flex-col gap-1 rounded border border-gray-200 p-2 text-sm hover:border-blue-400"
     >
       <span className="flex items-center gap-2 font-semibold text-green-700">
         {ItemLine({ item: cell.winner })}
@@ -160,7 +176,7 @@ function MatchupCellView({ cell }: { cell: MatchupCell }) {
       <span className="flex items-center gap-2 text-gray-400 line-through">
         {ItemLine({ item: cell.loser })}
       </span>
-    </div>
+    </a>
   );
 }
 
