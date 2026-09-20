@@ -472,6 +472,79 @@ describe("/brackets/[id]/matchups/[matchupId] page", () => {
     expect(voteFindFirst).not.toHaveBeenCalled();
   });
 
+  describe("issue #25: round/tie-breaker countdown", () => {
+    it("passes the active Round's endsAt as the countdown for a plain ACTIVE matchup", async () => {
+      const endsAt = new Date("2026-01-02T00:00:00.000Z");
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: [{ ...ACTIVE_MATCHUP_ROUNDS("ACTIVE")[0], endsAt }],
+      });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain(`"endsAt":"${endsAt.toISOString()}"`);
+    });
+
+    it("passes the matchup's own tieBreakerEndsAt (not the Round's endsAt) as the countdown for a TIE_BREAKER matchup", async () => {
+      const roundEndsAt = new Date("2026-01-01T00:00:00.000Z"); // already passed
+      const tieBreakerEndsAt = new Date("2026-01-02T01:00:00.000Z");
+      const rounds = ACTIVE_MATCHUP_ROUNDS("TIE_BREAKER");
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: [
+          {
+            ...rounds[0],
+            endsAt: roundEndsAt,
+            matchups: [{ ...rounds[0].matchups[0], tieBreakerEndsAt }],
+          },
+        ],
+      });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).toContain(`"endsAt":"${tieBreakerEndsAt.toISOString()}"`);
+      expect(html).not.toContain(`"endsAt":"${roundEndsAt.toISOString()}"`);
+    });
+
+    it("renders no countdown when the active Round has no endsAt set", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "ACTIVE",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: ACTIVE_MATCHUP_ROUNDS("ACTIVE"), // no endsAt field at all
+      });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).not.toContain('"endsAt"');
+    });
+
+    it("renders no countdown on the bracket-level not-started status message", async () => {
+      findUnique.mockResolvedValue({
+        id: "b1",
+        title: "Best Movie",
+        status: "DRAFT",
+        votingRequirement: "ANONYMOUS_ALLOWED",
+        rounds: [],
+      });
+
+      const result = await BracketMatchupVotingPage({ params: params("b1", "m1") });
+      const html = JSON.stringify(result);
+
+      expect(html).not.toContain('"endsAt"');
+    });
+  });
+
   it("scopes to the named matchup even when the ACTIVE round has more than one votable matchup", async () => {
     findUnique.mockResolvedValue({
       id: "b1",

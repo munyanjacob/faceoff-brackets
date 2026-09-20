@@ -1,4 +1,5 @@
 import { CommentField, CommentProvider } from "./comment-field";
+import { CountdownDisplay } from "./countdown-display";
 import { VoteButton } from "./vote-button";
 import type {
   VoteCounts,
@@ -61,6 +62,15 @@ import type {
  * `null` default so every existing call site - `../page.tsx`'s
  * `no-active-matchup` case included - doesn't have to start threading a
  * value it never needs.
+ *
+ * `countdownEndsAt` (issue #25) is the same shape of pass-through:
+ * `./matchups/[matchupId]/page.tsx` is the only caller that ever populates
+ * it, with either the active Round's `endsAt` or - during a tie-breaker -
+ * the matchup's own `tieBreakerEndsAt` (see that file's top comment for the
+ * full reasoning). `null` (the default) means "don't show a countdown" -
+ * covers `../page.tsx`'s bracket-level status-message call (no single
+ * matchup to count down for) and the defensive case where a Round somehow
+ * has no `endsAt` set yet.
  */
 export function MatchupVoting({
   bracketTitle,
@@ -68,12 +78,14 @@ export function MatchupVoting({
   votingState,
   voterContext,
   voteCounts = null,
+  countdownEndsAt = null,
 }: {
   bracketTitle: string;
   bracketId: string;
   votingState: VotingState;
   voterContext: VoterContext;
   voteCounts?: VoteCounts | null;
+  countdownEndsAt?: Date | string | null;
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
@@ -90,6 +102,7 @@ export function MatchupVoting({
             isTieBreaker: votingState.isTieBreaker,
             voterContext,
             voteCounts,
+            countdownEndsAt,
           })}
     </main>
   );
@@ -117,11 +130,13 @@ function MatchupPanel({
   isTieBreaker,
   voterContext,
   voteCounts,
+  countdownEndsAt,
 }: {
   matchup: VotingMatchup;
   isTieBreaker: boolean;
   voterContext: VoterContext;
   voteCounts: VoteCounts | null;
+  countdownEndsAt: Date | string | null;
 }) {
   if (!matchup.itemA || !matchup.itemB) {
     return StatusMessage({
@@ -135,6 +150,16 @@ function MatchupPanel({
 
   return (
     <section aria-label="Current matchup" className="flex flex-col gap-4">
+      {/*
+        Issue #25: only shown when there's an actual matchup to vote on
+        (this branch of MatchupPanel, reached only once both items are
+        present) - never on the bracket-level not-started/between-rounds/
+        completed status messages `StatusMessage` renders above, and never
+        at all when the caller has no `endsAt` to show one for (e.g. a
+        Round somehow missing `endsAt`, or `../page.tsx`'s status-message-
+        only call, which never populates `countdownEndsAt`).
+      */}
+      {countdownEndsAt ? <CountdownDisplay endsAt={countdownEndsAt} /> : null}
       {isTieBreaker
         ? StatusMessage({
             message:
