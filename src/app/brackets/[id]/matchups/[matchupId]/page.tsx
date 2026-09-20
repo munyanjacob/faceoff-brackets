@@ -63,6 +63,28 @@ import { currentVoterLookupKey } from "../../voter-identity";
  * 404. Only an actually-wrong matchup id (typo, already-decided matchup,
  * one that belongs to a different round/bracket) 404s via `notFound()` -
  * see `../../voting-view-model.ts`'s `determineMatchupVotingState`.
+ *
+ * Issue #25's countdown: computed here (as `countdownEndsAt`) and threaded
+ * to `../../matchup-voting.tsx` the same way issue #24 threaded
+ * `voteCounts` - only when `votingState.kind === "matchup"`, since that's
+ * the only case with an actual `endsAt` worth counting down to.
+ *
+ * Which timestamp: a plain `ACTIVE` matchup counts down to the active
+ * Round's own `endsAt` (already includes any issue #13 per-round duration
+ * override - baked into `Round.durationMinutes`, and so into `endsAt`, at
+ * creation time per #18/#20/#28; nothing here needs to recompute it). A
+ * `TIE_BREAKER` matchup counts down to *its own* `tieBreakerEndsAt`
+ * instead - deliberately not the Round's `endsAt`, which by that point has
+ * already passed (that's *why* the matchup tied and moved to a
+ * tie-breaker - see `evaluateRound`'s doc comment) and doesn't close the
+ * Round while the tie-breaker is open (#20). Showing the stale, already-
+ * expired Round `endsAt` during a tie-breaker would either read as
+ * "closing" indefinitely (contradicting the still-open tie-breaker vote)
+ * or, worse, look like a bug. `bracket.rounds` is queried with the same
+ * unfiltered `include` as every other field here, so `Round.endsAt` and
+ * `Matchup.tieBreakerEndsAt` are already present on the fetched rows - no
+ * query change was needed for this (same reasoning as
+ * `../../voting-view-model.ts`'s `scheduledStartAt` comment).
  */
 export default async function BracketMatchupVotingPage({
   params,
@@ -145,6 +167,20 @@ export default async function BracketMatchupVotingPage({
     }
   }
 
+  // Issue #25: only computed once we know there's an actual matchup being
+  // shown - see this file's top comment for which timestamp is picked and
+  // why. `bracket.rounds` here is the same already-fetched ACTIVE-round
+  // list `determineMatchupVotingState` searched above (filtered by the
+  // `prisma.bracket.findUnique` call's own `where: { status: "ACTIVE" }`),
+  // so this is a plain in-memory lookup, not a second query.
+  let countdownEndsAt: Date | null = null;
+  if (votingState.kind === "matchup") {
+    const activeRound = bracket.rounds.find((round) => round.status === "ACTIVE");
+    countdownEndsAt = votingState.isTieBreaker
+      ? votingState.matchup.tieBreakerEndsAt ?? null
+      : activeRound?.endsAt ?? null;
+  }
+
   // Called directly as a plain function, not as a `<MatchupVoting ... />`
   // JSX element - same reasoning as `../../page.tsx`'s pre-#40 version and
   // `../../../discover/page.tsx`'s call to `DiscoveryGroups`: this
@@ -156,5 +192,6 @@ export default async function BracketMatchupVotingPage({
     votingState,
     voterContext,
     voteCounts,
+    countdownEndsAt,
   });
 }

@@ -65,6 +65,18 @@ export type VotingMatchup = {
   status: string; // Matchup status ("ACTIVE" | "TIE_BREAKER" here; see below)
   itemA: VotingItem | null;
   itemB: VotingItem | null;
+  /**
+   * Issue #25: a `TIE_BREAKER` matchup's own end time (`prisma/schema.
+   * prisma`'s `Matchup.tieBreakerEndsAt`), separate from its Round's
+   * `endsAt` - see `./matchups/[matchupId]/page.tsx`'s top comment for why
+   * the countdown shown during a tie-breaker uses this instead. Optional
+   * (rather than required) for the same reason `VotingBracket.
+   * scheduledStartAt` is above: every existing call site/test that only
+   * cares about `status`/`itemA`/`itemB` doesn't have to start threading a
+   * value it never uses, and a non-`TIE_BREAKER` matchup never has one
+   * anyway.
+   */
+  tieBreakerEndsAt?: Date | null;
 };
 
 export type VotingRound = {
