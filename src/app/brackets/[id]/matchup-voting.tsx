@@ -1,14 +1,29 @@
-import type { VotingItem, VotingMatchup, VotingState } from "./voting-view-model";
+import { VoteButton } from "./vote-button";
+import type {
+  VoterContext,
+  VotingItem,
+  VotingMatchup,
+  VotingState,
+} from "./voting-view-model";
 
 /**
- * `/brackets/[id]`'s presentational content (issue #21): either the current
- * matchup's two items side by side, or an explanatory status message.
- * Follows the same "call sub-components as plain functions, not JSX
- * elements" pattern as `../../discover/discovery-groups.tsx`/
- * `../../dashboard/bracket-list.tsx`, so this codebase's page tests can
- * introspect the returned tree via `JSON.stringify` (which can't see into
- * an unrendered `<Component ... />` element, since its `type` is a function
- * reference that gets dropped).
+ * `/brackets/[id]`'s presentational content (issue #21, vote buttons wired
+ * up for real by issue #22): either the current matchup's two items side by
+ * side, or an explanatory status message. Follows the same "call
+ * sub-components as plain functions, not JSX elements" pattern as
+ * `../../discover/discovery-groups.tsx`/`../../dashboard/bracket-list.tsx`,
+ * so this codebase's page tests can introspect the returned tree via
+ * `JSON.stringify` (which can't see into an unrendered `<Component ... />`
+ * element, since its `type` is a function reference that gets dropped) -
+ * `./vote-button.tsx`'s `<VoteButton>` is the one deliberate exception:
+ * it's a real client component (it needs `useActionState`/`useFormStatus`),
+ * so it's rendered as an actual element, not called as a plain function -
+ * its own internal render (the "Vote" text, pending/error state) is
+ * intentionally opaque to `JSON.stringify` for that reason, and is instead
+ * covered by `./vote-actions.ts`'s tests, not a rendering test here (this
+ * codebase has no client-component rendering tests anywhere else either -
+ * see e.g. `../../dashboard/brackets/[id]/edit/item-row.tsx` having no
+ * `item-row.test.tsx`).
  *
  * Layout intentionally leaves room below the two vote buttons for #23's
  * comment field (per `_docs/outdated/plan.md` SS13's mockup - image+title
@@ -19,9 +34,11 @@ import type { VotingItem, VotingMatchup, VotingState } from "./voting-view-model
 export function MatchupVoting({
   bracketTitle,
   votingState,
+  voterContext,
 }: {
   bracketTitle: string;
   votingState: VotingState;
+  voterContext: VoterContext;
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
@@ -31,6 +48,7 @@ export function MatchupVoting({
         : MatchupPanel({
             matchup: votingState.matchup,
             isTieBreaker: votingState.isTieBreaker,
+            voterContext,
           })}
     </main>
   );
@@ -56,9 +74,11 @@ function StatusMessage({ message }: { message: string }) {
 function MatchupPanel({
   matchup,
   isTieBreaker,
+  voterContext,
 }: {
   matchup: VotingMatchup;
   isTieBreaker: boolean;
+  voterContext: VoterContext;
 }) {
   if (!matchup.itemA || !matchup.itemB) {
     return StatusMessage({
@@ -74,15 +94,32 @@ function MatchupPanel({
               "This matchup tied and is now in a tie-breaker vote.",
           })
         : null}
+      {/*
+        issue #22's "voting is blocked with a message directing them to
+        sign in" criterion - shown once for the matchup, not duplicated per
+        item. Both items still render (read-only, no vote control) below -
+        the block is only on the *action*, not on seeing the matchup.
+      */}
+      {voterContext.kind === "blocked"
+        ? StatusMessage({ message: voterContext.message })
+        : null}
       <div className="flex flex-col items-center gap-6 sm:flex-row sm:items-start sm:justify-center">
-        {ItemPanel({ item: matchup.itemA })}
-        {ItemPanel({ item: matchup.itemB })}
+        {ItemPanel({ matchupId: matchup.id, item: matchup.itemA, voterContext })}
+        {ItemPanel({ matchupId: matchup.id, item: matchup.itemB, voterContext })}
       </div>
     </section>
   );
 }
 
-function ItemPanel({ item }: { item: VotingItem }) {
+function ItemPanel({
+  matchupId,
+  item,
+  voterContext,
+}: {
+  matchupId: string;
+  item: VotingItem;
+  voterContext: VoterContext;
+}) {
   return (
     <div className="flex w-full flex-col items-center gap-2 border p-4 sm:w-72" key={item.id}>
       {item.imageUrl ? (
@@ -111,18 +148,45 @@ function ItemPanel({ item }: { item: VotingItem }) {
         <p className="text-center text-sm text-gray-600">{item.description}</p>
       ) : null}
 
-      {/*
-        Placeholder only (issue #21's last acceptance criterion): this does
-        not submit a vote. #22 wires this up to a real Server Action.
-      */}
-      <button
-        type="button"
-        disabled
-        title="Voting isn't available yet"
-        className="mt-2 border px-4 py-1 disabled:opacity-50"
-      >
-        Vote
-      </button>
+      {VoteControl({ matchupId, item, voterContext })}
     </div>
   );
+}
+
+/**
+ * Issue #22's three post-#21 states for the area below an item's
+ * title/description, in order of precedence:
+ *  1. `voterContext.kind === "blocked"` (ACCOUNT_REQUIRED, signed out) - no
+ *     control at all; the single explanatory message above already covers
+ *     both items.
+ *  2. An existing vote already found for this matchup (whether from before
+ *     this page load, or from a just-submitted `<VoteButton>` reporting its
+ *     result) - show which item it was for, nothing on the other.
+ *  3. Otherwise, a real `<VoteButton>` (issue #22's actual submission path -
+ *     see `./vote-button.tsx`).
+ */
+function VoteControl({
+  matchupId,
+  item,
+  voterContext,
+}: {
+  matchupId: string;
+  item: VotingItem;
+  voterContext: VoterContext;
+}) {
+  if (voterContext.kind === "blocked") {
+    return null;
+  }
+
+  if (voterContext.existingVoteItemId) {
+    return voterContext.existingVoteItemId === item.id
+      ? (
+          <p aria-live="polite" className="mt-2 text-sm font-medium">
+            Your vote
+          </p>
+        )
+      : null;
+  }
+
+  return <VoteButton matchupId={matchupId} itemId={item.id} />;
 }

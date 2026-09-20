@@ -1,0 +1,419 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+// Exercises issue #22's `castVote` Server Action end-to-end against the
+// real, disposable Supabase/Postgres project configured in `.env.local`:
+// seeds a real `Profile` + `Bracket` (+ `BracketItem`/`Round`/`Matchup`)
+// tree, calls the real (unmocked) action, asserts the resulting `Vote`
+// row(s), then cleans everything up. Same disposable-test-data pattern as
+// `../../dashboard/brackets/[id]/edit/publish-actions.integration.test.ts`
+// - see that file for the fuller rationale.
+//
+// This suite in particular is what proves the schema's
+// `@@unique([matchupId, userId])` / `@@unique([matchupId,
+// anonymousVoterIdentifier])` constraints (issue #3) are the real guard
+// against a duplicate vote, not just the action's own proactive check -
+// mocked-Prisma tests (./vote-actions.test.ts) can only simulate a P2002
+// throw; this one gets the genuine one from Postgres.
+let currentUserId: string | undefined;
+
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: vi.fn(async () => ({
+    auth: {
+      getUser: vi.fn(async () => ({
+        data: { user: currentUserId ? { id: currentUserId } : null },
+        error: null,
+      })),
+    },
+  })),
+}));
+
+vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+
+// A minimal in-memory cookie jar, standing in for the real request-scoped
+// one `next/headers`'s `cookies()` provides - good enough to prove
+// "reuses an existing identifier" / "mints one when absent" within a
+// single test, the same reasoning as
+// `../../../lib/supabase/get-user.signed-out.test.ts`'s stub.
+let cookieJar: Map<string, string>;
+
+vi.mock("next/headers", () => ({
+  cookies: vi.fn(async () => ({
+    get: (name: string) =>
+      cookieJar.has(name) ? { name, value: cookieJar.get(name)! } : undefined,
+    set: (name: string, value: string) => {
+      cookieJar.set(name, value);
+    },
+  })),
+}));
+
+// See ../../dashboard/dashboard-query.integration.test.ts for why
+// DATABASE_URL needs re-reading directly from .env.local rather than
+// trusting Vite's (`$`-mangled) copy of it, and why this must happen before
+// `@/lib/prisma` is ever imported.
+function fixDatabaseUrlFromEnvFile(): string | undefined {
+  delete process.env.DATABASE_URL;
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // .env.local is gitignored and may not exist (e.g. CI) - fall through
+    // with DATABASE_URL left unset, same as prisma7.config.ts.
+  }
+  return process.env.DATABASE_URL;
+}
+
+const hasLiveDatabase = Boolean(fixDatabaseUrlFromEnvFile());
+
+describe.runIf(hasLiveDatabase)(
+  "castVote Server Action, against the live database",
+  () => {
+    let prisma: Awaited<typeof import("@/lib/prisma")>["prisma"];
+    let castVote: typeof import("./vote-actions").castVote;
+    let initialVoteFormState: typeof import("./vote-actions").initialVoteFormState;
+
+    const creatorId = randomUUID();
+    const voterProfileId = randomUUID();
+    const bracketIds: string[] = [];
+    const profileIds: string[] = [];
+
+    let activeMatchupId: string;
+    let activeMatchupItemAId: string;
+    let activeMatchupItemBId: string;
+    let accountRequiredMatchupId: string;
+    let accountRequiredItemAId: string;
+    let closedRoundMatchupId: string;
+    let closedRoundItemAId: string;
+    let tieBreakerMatchupId: string;
+    let tieBreakerItemAId: string;
+    let duplicateTestMatchupId: string;
+    let duplicateTestItemAId: string;
+    let duplicateTestItemBId: string;
+
+    beforeAll(async () => {
+      ({ prisma } = await import("@/lib/prisma"));
+      ({ castVote, initialVoteFormState } = await import("./vote-actions"));
+
+      await prisma.profile.createMany({
+        data: [
+          {
+            id: creatorId,
+            email: `vote-e2e-creator-${Date.now()}-${Math.random()
+              .toString(36)
+              .slice(2)}@example.test`,
+          },
+          {
+            id: voterProfileId,
+            email: `vote-e2e-voter-${Date.now()}-${Math.random()
+              .toString(36)
+              .slice(2)}@example.test`,
+          },
+        ],
+      });
+      profileIds.push(creatorId, voterProfileId);
+
+      async function makeBracket(
+        title: string,
+        votingRequirement: "ANONYMOUS_ALLOWED" | "ACCOUNT_REQUIRED"
+      ) {
+        const bracket = await prisma.bracket.create({
+          data: {
+            creatorId,
+            title,
+            visibility: "PUBLIC",
+            votingRequirement,
+            defaultRoundDurationMinutes: 60,
+            status: "ACTIVE",
+            publishedAt: new Date(),
+          },
+        });
+        bracketIds.push(bracket.id);
+        return bracket.id;
+      }
+
+      async function makeItems(bracketId: string, count: number) {
+        const items = [];
+        for (let i = 0; i < count; i++) {
+          items.push(
+            await prisma.bracketItem.create({
+              data: { bracketId, title: `Item ${i + 1}` },
+            })
+          );
+        }
+        return items;
+      }
+
+      // Bracket 1: ANONYMOUS_ALLOWED, one ACTIVE round with an ACTIVE
+      // matchup, and a second, already-COMPLETED round with a matchup
+      // whose round has closed.
+      const anonymousBracketId = await makeBracket(
+        "Vote e2e - anonymous allowed",
+        "ANONYMOUS_ALLOWED"
+      );
+      const anonymousItems = await makeItems(anonymousBracketId, 8);
+
+      const activeRound = await prisma.round.create({
+        data: {
+          bracketId: anonymousBracketId,
+          roundNumber: 1,
+          durationMinutes: 60,
+          status: "ACTIVE",
+          startsAt: new Date(),
+          endsAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      const activeMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: anonymousItems[0].id,
+          itemBId: anonymousItems[1].id,
+          status: "ACTIVE",
+        },
+      });
+      activeMatchupId = activeMatchup.id;
+      activeMatchupItemAId = anonymousItems[0].id;
+      activeMatchupItemBId = anonymousItems[1].id;
+
+      const tieBreakerMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: anonymousItems[2].id,
+          itemBId: anonymousItems[3].id,
+          status: "TIE_BREAKER",
+          tieBreakerEndsAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      tieBreakerMatchupId = tieBreakerMatchup.id;
+      tieBreakerItemAId = anonymousItems[2].id;
+
+      const closedRound = await prisma.round.create({
+        data: {
+          bracketId: anonymousBracketId,
+          roundNumber: 2,
+          durationMinutes: 60,
+          status: "COMPLETED",
+          startsAt: new Date(Date.now() - 2 * 60 * 60_000),
+          endsAt: new Date(Date.now() - 60 * 60_000),
+        },
+      });
+      const closedRoundMatchup = await prisma.matchup.create({
+        data: {
+          roundId: closedRound.id,
+          itemAId: anonymousItems[4].id,
+          itemBId: anonymousItems[5].id,
+          status: "ACTIVE",
+        },
+      });
+      closedRoundMatchupId = closedRoundMatchup.id;
+      closedRoundItemAId = anonymousItems[4].id;
+
+      const duplicateTestMatchup = await prisma.matchup.create({
+        data: {
+          roundId: activeRound.id,
+          itemAId: anonymousItems[6].id,
+          itemBId: anonymousItems[7].id,
+          status: "ACTIVE",
+        },
+      });
+      duplicateTestMatchupId = duplicateTestMatchup.id;
+      duplicateTestItemAId = anonymousItems[6].id;
+      duplicateTestItemBId = anonymousItems[7].id;
+
+      // Bracket 2: ACCOUNT_REQUIRED, one ACTIVE matchup.
+      const accountRequiredBracketId = await makeBracket(
+        "Vote e2e - account required",
+        "ACCOUNT_REQUIRED"
+      );
+      const accountRequiredItems = await makeItems(accountRequiredBracketId, 2);
+      const accountRequiredRound = await prisma.round.create({
+        data: {
+          bracketId: accountRequiredBracketId,
+          roundNumber: 1,
+          durationMinutes: 60,
+          status: "ACTIVE",
+          startsAt: new Date(),
+          endsAt: new Date(Date.now() + 60 * 60_000),
+        },
+      });
+      const accountRequiredMatchup = await prisma.matchup.create({
+        data: {
+          roundId: accountRequiredRound.id,
+          itemAId: accountRequiredItems[0].id,
+          itemBId: accountRequiredItems[1].id,
+          status: "ACTIVE",
+        },
+      });
+      accountRequiredMatchupId = accountRequiredMatchup.id;
+      accountRequiredItemAId = accountRequiredItems[0].id;
+    });
+
+    beforeEach(() => {
+      currentUserId = undefined;
+      cookieJar = new Map();
+    });
+
+    afterAll(async () => {
+      // Delete children before parents (`onDelete: Restrict` throughout the
+      // schema) so this suite never leaves test data behind in the one
+      // live database this project has.
+      await prisma.vote.deleteMany({
+        where: { matchup: { round: { bracketId: { in: bracketIds } } } },
+      });
+      await prisma.matchup.deleteMany({
+        where: { round: { bracketId: { in: bracketIds } } },
+      });
+      await prisma.round.deleteMany({ where: { bracketId: { in: bracketIds } } });
+      await prisma.bracketItem.deleteMany({
+        where: { bracketId: { in: bracketIds } },
+      });
+      await prisma.bracket.deleteMany({ where: { id: { in: bracketIds } } });
+      await prisma.profile.deleteMany({ where: { id: { in: profileIds } } });
+      await prisma.$disconnect();
+    });
+
+    it("records a signed-in voter's Vote.userId as their Profile id", async () => {
+      currentUserId = voterProfileId;
+
+      const result = await castVote(
+        activeMatchupId,
+        activeMatchupItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: activeMatchupItemAId });
+
+      const vote = await prisma.vote.findFirst({
+        where: { matchupId: activeMatchupId, userId: voterProfileId },
+      });
+      expect(vote).not.toBeNull();
+      expect(vote?.itemId).toBe(activeMatchupItemAId);
+      expect(vote?.anonymousVoterIdentifier).toBeNull();
+    });
+
+    it("gives an anonymous voter on an ANONYMOUS_ALLOWED bracket a cookie identifier and records it on the Vote", async () => {
+      const result = await castVote(
+        activeMatchupId,
+        activeMatchupItemBId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: activeMatchupItemBId });
+      expect(cookieJar.get("voter_id")).toBeDefined();
+
+      const vote = await prisma.vote.findFirst({
+        where: {
+          matchupId: activeMatchupId,
+          anonymousVoterIdentifier: cookieJar.get("voter_id"),
+        },
+      });
+      expect(vote).not.toBeNull();
+      expect(vote?.itemId).toBe(activeMatchupItemBId);
+      expect(vote?.userId).toBeNull();
+    });
+
+    it("blocks an anonymous visitor on an ACCOUNT_REQUIRED bracket with a sign-in message, and creates no Vote", async () => {
+      const result = await castVote(
+        accountRequiredMatchupId,
+        accountRequiredItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({
+        error: "Sign in to vote on this bracket.",
+        votedItemId: null,
+      });
+
+      const vote = await prisma.vote.findFirst({
+        where: { matchupId: accountRequiredMatchupId },
+      });
+      expect(vote).toBeNull();
+    });
+
+    it("rejects a duplicate vote from the same signed-in identity and reports the existing choice, relying on the real unique constraint", async () => {
+      currentUserId = voterProfileId;
+
+      const original = await castVote(
+        duplicateTestMatchupId,
+        duplicateTestItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+      expect(original).toEqual({
+        error: null,
+        votedItemId: duplicateTestItemAId,
+      });
+
+      const secondAttempt = await castVote(
+        duplicateTestMatchupId,
+        duplicateTestItemBId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      // Rejected as a duplicate - and reports the *original* choice, not
+      // the second item just attempted, proving the real unique constraint
+      // (not just the proactive check) is what's enforcing this.
+      expect(secondAttempt).toEqual({
+        error: null,
+        votedItemId: duplicateTestItemAId,
+      });
+
+      const votes = await prisma.vote.findMany({
+        where: { matchupId: duplicateTestMatchupId, userId: voterProfileId },
+      });
+      expect(votes).toHaveLength(1);
+      expect(votes[0].itemId).toBe(duplicateTestItemAId);
+    });
+
+    it("rejects a vote on a matchup whose round has already closed", async () => {
+      const result = await castVote(
+        closedRoundMatchupId,
+        closedRoundItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({
+        error: "Voting has closed for this round.",
+        votedItemId: null,
+      });
+
+      const vote = await prisma.vote.findFirst({
+        where: { matchupId: closedRoundMatchupId },
+      });
+      expect(vote).toBeNull();
+    });
+
+    it("accepts a vote on a TIE_BREAKER matchup", async () => {
+      const result = await castVote(
+        tieBreakerMatchupId,
+        tieBreakerItemAId,
+        initialVoteFormState,
+        new FormData()
+      );
+
+      expect(result).toEqual({ error: null, votedItemId: tieBreakerItemAId });
+
+      const vote = await prisma.vote.findFirst({
+        where: { matchupId: tieBreakerMatchupId },
+      });
+      expect(vote).not.toBeNull();
+    });
+  }
+);
+
+if (!hasLiveDatabase) {
+  // No live database configured (e.g. CI, or a fresh checkout with no
+  // `.env.local`) - explain the skip instead of silently doing nothing,
+  // same reasoning as the skip note in
+  // ../../dashboard/dashboard-query.integration.test.ts.
+  describe("castVote Server Action, against the live database", () => {
+    console.warn(
+      "[vote-actions.integration.test] Skipping: no live DATABASE_URL is configured in .env.local."
+    );
+
+    it.skip("requires a live DATABASE_URL in .env.local to run this suite locally", () => {});
+  });
+}
