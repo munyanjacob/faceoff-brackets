@@ -20,9 +20,11 @@ import { castVote, initialVoteFormState } from "./vote-actions";
  * existing choice (e.g. they already voted, or a race resolved in the
  * other item's favor), this button simply goes back to a plain "Vote"
  * state and the page's own revalidated re-render (see `./vote-actions.ts`'s
- * `revalidatePath` call) - which recomputes `existingVoteItemId` for the
- * whole matchup from `./page.tsx` - supplies the correct, consistent
- * "Your vote" label on the right item moments later. This transient gap is
+ * `revalidatePath` call, which as of issue #40 revalidates both
+ * `/brackets/[id]` and this matchup's own `/brackets/[id]/matchups/
+ * [matchupId]`) - which recomputes `existingVoteItemId` for the whole
+ * matchup from `./matchups/[matchupId]/page.tsx` - supplies the correct,
+ * consistent "Your vote" label on the right item moments later. This transient gap is
  * a deliberate simplicity trade-off, not an oversight.
  */
 export function VoteButton({

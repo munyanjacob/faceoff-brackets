@@ -37,14 +37,20 @@
  * ## Multiple simultaneous matchups in one round
  *
  * A real bracket's round 1 can have several matchups active at once (e.g.
- * 4 matchups from 8 items). This page (and its `/brackets/[id]` route, with
- * no matchup id in the URL) only has room for one. Issue #21 doesn't say
- * how to pick "the" one when there's more than one, and doesn't propose a
- * per-matchup URL or a matchup switcher either. Rather than guess at a UX
- * that might get thrown away, this picks the first votable matchup in a
- * deterministic order (whatever order `page.tsx`'s Prisma query returns
- * them in) and renders only that one. Flagged as a genuine ambiguity in the
- * issue #21 comment, not silently resolved.
+ * 4 matchups from 8 items). Issue #21 flagged this as a genuine ambiguity
+ * - no per-matchup URL, no switcher, no picking rule. Issue #40 resolves
+ * it: `/brackets/[id]/matchups/[matchupId]` (a sibling page, see
+ * `./matchup-voting.tsx`'s doc comment) is the real per-matchup view now,
+ * and `determineVotingState` below - "pick the first votable matchup,
+ * deterministically" - is kept as-is specifically because `/brackets/[id]`
+ * still needs exactly that rule for its redirect-when-there's-only-one
+ * case (`./page.tsx`). `listVotableMatchups` below is the new sibling for
+ * the index case (more than one votable matchup), and
+ * `determineMatchupVotingState` is the sibling for the per-matchup route
+ * itself (look up *this* matchup id, not "the first one"). All three share
+ * `findActiveRoundOrMessage`'s bracket-level "is there even a live round
+ * right now" logic, so the not-started/completed/between-rounds messages
+ * stay in exactly one place.
  */
 
 export type VotingItem = {
@@ -109,6 +115,26 @@ export function isVotableMatchupStatus(
 }
 
 /**
+ * A matchup that's actually votable *and* has both its items populated -
+ * the same two-part test `determineVotingState`'s `votableMatchup` search
+ * used inline before issue #40 factored it out for reuse by
+ * `listVotableMatchups` and `determineMatchupVotingState` below. A type
+ * predicate (not just a boolean) so callers that `.filter()` with it get a
+ * narrowed, non-null `itemA`/`itemB` back without a separate cast - see
+ * `MatchupListState` below, whose whole reason to exist is handing the
+ * index page items it can safely read `.title` off of.
+ */
+function isVotableAndComplete(
+  matchup: VotingMatchup
+): matchup is VotingMatchup & { itemA: VotingItem; itemB: VotingItem } {
+  return (
+    isVotableMatchupStatus(matchup.status) &&
+    matchup.itemA !== null &&
+    matchup.itemB !== null
+  );
+}
+
+/**
  * Whether the current visitor is even allowed to attempt a vote on this
  * bracket, and - if they are - which item (if any) they've already voted
  * for on the current matchup. Computed once per page render by
@@ -140,14 +166,20 @@ export function determineVoterContext(
 }
 
 /**
- * Determines what `/brackets/[id]` should show: the one active matchup to
- * vote on, or an explanatory status message when there isn't one right now.
- * See this file's top comment for the full reasoning.
+ * The bracket-level half of `determineVotingState`'s old logic (issue #21):
+ * not-started/completed/between-rounds, or "here's the live round" when
+ * voting is actually possible right now. Factored out by issue #40 so
+ * `determineVotingState`, `listVotableMatchups`, and
+ * `determineMatchupVotingState` below all give identical answers to "is
+ * there even a live round" without repeating the three bracket-status
+ * checks three times.
  */
-export function determineVotingState(
+function findActiveRoundOrMessage(
   bracket: VotingBracket,
   activeRounds: VotingRound[]
-): VotingState {
+):
+  | { kind: "no-active-matchup"; message: string }
+  | { kind: "round"; round: VotingRound } {
   if (bracket.status === "DRAFT" || bracket.status === "SCHEDULED") {
     return { kind: "no-active-matchup", message: NOT_STARTED_MESSAGE };
   }
@@ -162,12 +194,28 @@ export function determineVotingState(
     return { kind: "no-active-matchup", message: BETWEEN_ROUNDS_MESSAGE };
   }
 
-  const votableMatchup = activeRound.matchups.find(
-    (matchup) =>
-      isVotableMatchupStatus(matchup.status) &&
-      matchup.itemA !== null &&
-      matchup.itemB !== null
-  );
+  return { kind: "round", round: activeRound };
+}
+
+/**
+ * Determines what `/brackets/[id]` should redirect to (the common,
+ * exactly-one-votable-matchup case) or show inline (a status message) when
+ * there isn't one right now. Kept picking "the first votable matchup,
+ * deterministically" rather than being replaced by `listVotableMatchups`
+ * below - `./page.tsx` still needs exactly this rule for its
+ * redirect-when-there's-only-one behavior (issue #40), and this function's
+ * behavior/signature are otherwise unchanged from issue #21/#22.
+ */
+export function determineVotingState(
+  bracket: VotingBracket,
+  activeRounds: VotingRound[]
+): VotingState {
+  const availability = findActiveRoundOrMessage(bracket, activeRounds);
+  if (availability.kind === "no-active-matchup") {
+    return availability;
+  }
+
+  const votableMatchup = availability.round.matchups.find(isVotableAndComplete);
 
   if (!votableMatchup) {
     return { kind: "no-active-matchup", message: BETWEEN_ROUNDS_MESSAGE };
@@ -177,5 +225,78 @@ export function determineVotingState(
     kind: "matchup",
     matchup: votableMatchup,
     isTieBreaker: votableMatchup.status === "TIE_BREAKER",
+  };
+}
+
+/**
+ * `/brackets/[id]`'s state when its active round has more than one votable
+ * matchup at once (issue #40's index case): every votable matchup in the
+ * round, for `./matchup-index.tsx` to render as a plain list of links into
+ * `/brackets/[id]/matchups/[matchupId]` - or the same bracket-level status
+ * message `determineVotingState` would show, when there's no live round to
+ * list matchups from at all.
+ *
+ * The "exactly one" case is deliberately *not* special-cased here - it
+ * still comes back as `{ kind: "matchups", matchups: [oneMatchup] }`.
+ * `./page.tsx` is the one that decides "exactly one -> redirect instead of
+ * rendering an index", since that's a routing decision, not a view-model
+ * one.
+ */
+export type MatchupListState =
+  | { kind: "no-active-matchup"; message: string }
+  | {
+      kind: "matchups";
+      matchups: (VotingMatchup & { itemA: VotingItem; itemB: VotingItem })[];
+    };
+
+export function listVotableMatchups(
+  bracket: VotingBracket,
+  activeRounds: VotingRound[]
+): MatchupListState {
+  const availability = findActiveRoundOrMessage(bracket, activeRounds);
+  if (availability.kind === "no-active-matchup") {
+    return availability;
+  }
+
+  const votableMatchups = availability.round.matchups.filter(isVotableAndComplete);
+
+  if (votableMatchups.length === 0) {
+    return { kind: "no-active-matchup", message: BETWEEN_ROUNDS_MESSAGE };
+  }
+
+  return { kind: "matchups", matchups: votableMatchups };
+}
+
+/**
+ * `/brackets/[id]/matchups/[matchupId]`'s state (issue #40): the one
+ * specific matchup the URL names, the same bracket-level status message
+ * `determineVotingState`/`listVotableMatchups` would show when there's no
+ * live round at all, or `{ kind: "not-found" }` when the round *is* live
+ * but this particular matchup id isn't a votable matchup in it (wrong id,
+ * already-decided matchup, belongs to a different round/bracket, etc.) -
+ * `./page.tsx` turns that into a 404 via `notFound()`, the same convention
+ * `./page.tsx`'s sibling already uses for an unknown bracket id.
+ */
+export type MatchupPageState = VotingState | { kind: "not-found" };
+
+export function determineMatchupVotingState(
+  bracket: VotingBracket,
+  activeRounds: VotingRound[],
+  matchupId: string
+): MatchupPageState {
+  const availability = findActiveRoundOrMessage(bracket, activeRounds);
+  if (availability.kind === "no-active-matchup") {
+    return availability;
+  }
+
+  const matchup = availability.round.matchups.find((m) => m.id === matchupId);
+  if (!matchup || !isVotableAndComplete(matchup)) {
+    return { kind: "not-found" };
+  }
+
+  return {
+    kind: "matchup",
+    matchup,
+    isTieBreaker: matchup.status === "TIE_BREAKER",
   };
 }

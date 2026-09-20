@@ -8,8 +8,18 @@ import type {
 
 /**
  * `/brackets/[id]`'s presentational content (issue #21, vote buttons wired
- * up for real by issue #22): either the current matchup's two items side by
- * side, or an explanatory status message. Follows the same "call
+ * up for real by issue #22): either one matchup's two items side by side, or
+ * an explanatory status message. Shared, unchanged, by two routes as of
+ * issue #40 - `/brackets/[id]/page.tsx` (the common case: its round has
+ * exactly one votable matchup, so it redirects straight into the matchup
+ * route below rather than ever calling this itself - see that file and
+ * `./voting-view-model.ts`'s top comment) and the new
+ * `./matchups/[matchupId]/page.tsx` (every case, including that common one,
+ * now scoped to one specific matchup id from the URL instead of "whichever
+ * one `determineVotingState` picks"). `/brackets/[id]/page.tsx` still calls
+ * this directly for its own bracket-level status messages (not-started/
+ * completed/between-rounds - see `./matchup-index.tsx`'s doc comment for
+ * why those don't move to the matchup route). Follows the same "call
  * sub-components as plain functions, not JSX elements" pattern as
  * `../../discover/discovery-groups.tsx`/`../../dashboard/bracket-list.tsx`,
  * so this codebase's page tests can introspect the returned tree via

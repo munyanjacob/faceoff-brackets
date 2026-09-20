@@ -195,6 +195,7 @@ export async function castVote(
     });
 
     revalidatePath(`/brackets/${matchup.round.bracketId}`);
+    revalidatePath(`/brackets/${matchup.round.bracketId}/matchups/${matchupId}`);
     return { error: null, votedItemId: created.itemId };
   } catch (err) {
     // The actual source of truth against the race the proactive check
@@ -211,6 +212,7 @@ export async function castVote(
         where: { matchupId, ...voterKey },
       });
       revalidatePath(`/brackets/${matchup.round.bracketId}`);
+      revalidatePath(`/brackets/${matchup.round.bracketId}/matchups/${matchupId}`);
       return { error: null, votedItemId: existingAfterRace?.itemId ?? null };
     }
     throw err;
