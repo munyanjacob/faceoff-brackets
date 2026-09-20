@@ -1,4 +1,5 @@
 import type { BracketTreeState, MatchupCell, RoundColumn, TreeItem } from "./bracket-tree-view-model";
+import type { ChampionState } from "./champion-view-model";
 
 /**
  * `/brackets/[id]/tree`'s presentational content (issue #30): the full
@@ -24,18 +25,26 @@ import type { BracketTreeState, MatchupCell, RoundColumn, TreeItem } from "./bra
  * every column always renders at a fixed readable width rather than
  * shrinking/clipping to fit the viewport.
  *
- * Issue #32 (the champion banner, out of scope here) slots in right after
- * the columns, once the final round's one matchup is `COMPLETED` - left as
- * a comment marker below rather than built now.
+ * Issue #32's champion section renders here, above the tree grid (below the
+ * title row) - per that issue's own acceptance criterion ("a champion
+ * section above the full tree"), not "right after the columns" as this
+ * file originally guessed before #32 was built; that guess is why a stale
+ * comment marker used to sit inside `TreeGrid` below instead. Only rendered
+ * when `champion.kind === "champion"` (`./champion-view-model.ts`'s
+ * `buildChampion` only produces that for a `COMPLETED` bracket with a
+ * decided final matchup - `{ kind: "none" }` for anything else, including
+ * `DRAFT`/`SCHEDULED`/`ACTIVE`).
  */
 export function BracketTree({
   bracketTitle,
   bracketId,
   treeState,
+  champion,
 }: {
   bracketTitle: string;
   bracketId: string;
   treeState: BracketTreeState;
+  champion: ChampionState;
 }) {
   return (
     <main className="flex flex-col gap-6 p-6">
@@ -45,10 +54,63 @@ export function BracketTree({
           Back to voting
         </a>
       </div>
+      {champion.kind === "champion" ? ChampionSection({ champion }) : null}
       {treeState.kind === "not-published"
         ? StatusMessage({ message: treeState.message })
         : TreeGrid({ rounds: treeState.rounds })}
     </main>
+  );
+}
+
+/**
+ * The champion section itself: winning item's image (or the same
+ * placeholder convention `../matchup-voting.tsx`'s `ItemPanel` uses for a
+ * missing `imageUrl`) and title, plus the final matchup's vote tally when
+ * there is one (`champion.tally` is `null` only for the unreachable-in-
+ * practice bye-as-final-matchup case - see `./champion-view-model.ts`'s top
+ * comment).
+ */
+function ChampionSection({
+  champion,
+}: {
+  champion: Extract<ChampionState, { kind: "champion" }>;
+}) {
+  return (
+    <section
+      aria-label="Champion"
+      className="flex flex-col items-center gap-2 rounded border border-yellow-400 bg-yellow-50 p-6 text-center"
+    >
+      <span className="text-xs font-semibold uppercase tracking-wide text-yellow-700">
+        Champion
+      </span>
+      {champion.winner.imageUrl ? (
+        // A plain <img> deliberately, not next/image - same reasoning as
+        // ../matchup-voting.tsx's ItemPanel: user-uploaded, unknown-aspect-
+        // ratio images from an external (Supabase Storage) domain.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={champion.winner.imageUrl}
+          alt={champion.winner.title}
+          className="h-32 w-32 object-cover"
+        />
+      ) : (
+        <div
+          role="img"
+          aria-label={`No image provided for ${champion.winner.title}`}
+          className="flex h-32 w-32 items-center justify-center border border-dashed bg-gray-100 text-sm text-gray-500"
+        >
+          No image
+        </div>
+      )}
+      <p className="text-lg font-semibold">{champion.winner.title}</p>
+      {champion.tally ? (
+        // A single interpolated string, not several JSX expressions, so
+        // this codebase's page tests (which assert on `JSON.stringify` of
+        // the returned tree - see e.g. `./page.test.tsx`) can match it as
+        // one readable string rather than several array entries.
+        <p className="text-sm text-gray-600">{formatVoteTally(champion.tally)}</p>
+      ) : null}
+    </section>
   );
 }
 
@@ -70,7 +132,6 @@ function TreeGrid({ rounds }: { rounds: RoundColumn[] }) {
       >
         {rounds.map((round) => RoundColumnView({ round }))}
       </div>
-      {/* Issue #32's champion banner slots in here, once it exists. */}
     </div>
   );
 }
@@ -162,6 +223,16 @@ function MatchupCellView({ cell }: { cell: MatchupCell }) {
       </span>
     </div>
   );
+}
+
+function formatVoteEntry(entry: { item: TreeItem; votes: number }): string {
+  return `${entry.item.title}: ${entry.votes} ${entry.votes === 1 ? "vote" : "votes"}`;
+}
+
+function formatVoteTally(
+  tally: [{ item: TreeItem; votes: number }, { item: TreeItem; votes: number }]
+): string {
+  return `${formatVoteEntry(tally[0])} - ${formatVoteEntry(tally[1])}`;
 }
 
 function ItemLine({ item }: { item: TreeItem | null }) {
