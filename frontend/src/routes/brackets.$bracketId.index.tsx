@@ -1,0 +1,109 @@
+import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { Button } from "@/components/ui/button";
+import { StatusPill } from "@/components/status-pill";
+import { bracketService, votingService, type MatchupSummary } from "@/services";
+
+export const Route = createFileRoute("/brackets/$bracketId/")({
+  head: () => ({
+    meta: [
+      { title: "Vote in this bracket — Bracket Arena" },
+      {
+        name: "description",
+        content: "Pick a side in every open matchup before the round clock runs out.",
+      },
+      { property: "og:title", content: "Vote in this bracket — Bracket Arena" },
+      {
+        property: "og:description",
+        content: "Pick a side in every open matchup before the round clock runs out.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
+    ],
+  }),
+  component: BracketPage,
+});
+
+function MatchupCard({ bracketId, matchup }: { bracketId: string; matchup: MatchupSummary }) {
+  const body = (
+    <div className="arena-panel p-6 transition-transform hover:-translate-y-1">
+      <StatusPill status={matchup.status} />
+      <div className="mt-4 flex items-center justify-between gap-4">
+        <span className="text-lg font-semibold">{matchup.itemA.title}</span>
+        <span className="text-stencil text-primary">vs</span>
+        <span className="text-lg font-semibold">
+          {matchup.itemB ? matchup.itemB.title : "Bye"}
+        </span>
+      </div>
+    </div>
+  );
+
+  if (matchup.status === "COMPLETED" || !matchup.itemB) {
+    return (
+      <Link
+        to="/brackets/$bracketId/matchups/$matchupId/result"
+        params={{ bracketId, matchupId: matchup.id }}
+      >
+        {body}
+      </Link>
+    );
+  }
+  return (
+    <Link
+      to="/brackets/$bracketId/matchups/$matchupId"
+      params={{ bracketId, matchupId: matchup.id }}
+    >
+      {body}
+    </Link>
+  );
+}
+
+function BracketPage() {
+  const { bracketId } = Route.useParams();
+
+  const { data: bracket } = useQuery({
+    queryKey: ["bracket", bracketId],
+    queryFn: () => bracketService.get(bracketId),
+  });
+
+  const { data, isLoading } = useQuery({
+    queryKey: ["matchups", bracketId],
+    queryFn: () => votingService.getVotableMatchups(bracketId),
+  });
+
+  return (
+    <div className="mx-auto max-w-4xl px-4 pb-24 pt-10">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p className="label-kicker">Bracket</p>
+          <h1 className="text-stencil mt-3 text-4xl">{bracket?.title ?? "Loading…"}</h1>
+          {bracket?.description && (
+            <p className="mt-2 max-w-xl text-muted-foreground">{bracket.description}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          {bracket && <StatusPill status={bracket.status} />}
+          <Link to="/brackets/$bracketId/tree" params={{ bracketId }}>
+            <Button variant="outline" size="sm">
+              See the tree
+            </Button>
+          </Link>
+        </div>
+      </div>
+
+      {isLoading && <p className="mt-8 text-sm text-muted-foreground">Loading matchups…</p>}
+
+      {data?.kind === "message" && (
+        <p className="arena-panel mt-8 p-6 text-muted-foreground">{data.message}</p>
+      )}
+
+      {data?.kind === "matchups" && (
+        <div className="mt-8 grid gap-4 sm:grid-cols-2">
+          {data.matchups.map((matchup) => (
+            <MatchupCard key={matchup.id} bracketId={bracketId} matchup={matchup} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
