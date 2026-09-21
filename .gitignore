@@ -1,8 +1,13 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+#
+# Patterns below are unanchored (no leading slash) so they match inside
+# backend/ (and any other app directory) as well as at the repo root, now
+# that the Next.js app lives in backend/ rather than at the repo root
+# (issue #45). frontend/ has its own .gitignore for its own build output.
 
 # dependencies
-/node_modules
-/.pnp
+node_modules
+.pnp
 .pnp.*
 .yarn/*
 !.yarn/patches
@@ -11,14 +16,14 @@
 !.yarn/versions
 
 # testing
-/coverage
+coverage
 
 # next.js
-/.next/
-/out/
+.next/
+out/
 
 # production
-/build
+build
 
 # misc
 .DS_Store
@@ -41,7 +46,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-/src/generated/prisma
+backend/src/generated/prisma
 
 # parallel-agent git worktrees
 /.worktrees/
