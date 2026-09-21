@@ -318,6 +318,10 @@ getMatchupResult(bracketId: string, matchupId: string): Promise<MatchupResult>  
 getBracketTree(bracketId: string): Promise<BracketTree>                          // rounds of cells + optional champion section
 ```
 
+`MatchupResult`'s `decided.comments` items are `MatchupComment { id, itemId, comment, createdAt }` — `id` is the underlying `Vote` row's id (§3), included specifically so the frontend has a stable React list key instead of array index.
+
+`BracketTree.rounds[].cells` is `MatchupCell[]`, a **discriminated union** on `kind` (`bye | completed | active | pending | upcoming`), matching `openapi.yaml` exactly — not a flatter `{status, itemA, itemB, winnerItemId}` shape. This is deliberate (see issue #49): a flat shape can represent illegal states (e.g. `status: "COMPLETED"` with a `null winnerItemId`, or a `winnerItemId` that isn't either item's id) that the union makes unrepresentable. Each round (`BracketTreeRound`) also carries its own `status` (`PENDING | ACTIVE | COMPLETED | NOT_STARTED`) and a `label`, and the top-level `BracketTree` carries `bracketTitle`, `bracketStatus`, and `totalRounds` alongside `rounds`/`champion` — these three were added to `openapi.yaml` because the tree page's header needs them and re-fetching `getBracket` just for a title/status would be strictly worse. `BracketTree.champion` uses `{ item, finalTally }` (not `{ winner, tally }`) to match the frontend's already-working naming.
+
 ### 7.5 `discoveryService` (public)
 ```ts
 listPublic(): Promise<{ recent: DiscoverRow[]; active: DiscoverRow[]; completed: DiscoverRow[] }>
@@ -366,6 +370,17 @@ The current `datetime-local` input is parsed with no timezone information at all
 ### 9.5 Frontend framework choice is unconstrained
 
 This spec assumes nothing about what `frontend/` is built with beyond "can call a JSON API, can hold a Supabase session, can set `credentials:'include'` on fetches." Next.js (App Router or Pages), a Vite+React SPA, Remix, etc. are all compatible with this contract. That decision belongs to whoever designs the frontend, not this document.
+
+### 9.6 openapi.yaml ↔ frontend type reconciliation (issue #49)
+
+`frontend/src/services/types.ts` was written against an earlier draft of `openapi.yaml` and had drifted in a few places by the time the frontend was imported (commit `da543c5`). Resolved as follows — `openapi.yaml` is now the exact source of truth again and `types.ts` matches it field-for-field:
+
+- **`BracketTree`/`BracketTreeRound`/`MatchupCell`**: the frontend had a flatter, non-discriminated `TreeCell` (`{status, itemA, itemB, winnerItemId}`) in place of `openapi.yaml`'s discriminated `MatchupCell` union. **Kept the discriminated union** (changed the frontend) — a flat shape can represent illegal states (e.g. `COMPLETED` with a null `winnerItemId`) that the union can't. The frontend's round-level `status` (`NOT_STARTED` included) and the tree-level `bracketTitle`/`bracketStatus`/`totalRounds` fields were genuinely useful and had no correctness downside, so those were **added to `openapi.yaml`** instead of dropped. `champion.{winner,tally}` was renamed to `champion.{item,finalTally}` in `openapi.yaml` to match the frontend's existing naming (naming-only, no behavior difference).
+- **`MatchupComment.id`**: missing from the frontend's type. **Added to the frontend type** (adopted `openapi.yaml`'s shape) — the underlying `Vote` row already has an id and the mock transport already generates one, so this was free, and it fixes a real React list-key-by-index anti-pattern in the result page.
+- **`MatchupVotingView.countdownEndsAt`**: `openapi.yaml` didn't mark it nullable; the frontend already typed and handled it as `string | null` (a `PENDING` matchup in an unstarted round has no `endsAt` yet). **Marked nullable in `openapi.yaml`** — the frontend's typing was the accurate one.
+- **`MatchupSummary.itemA`**: not in `openapi.yaml`'s `required` list; the frontend always treats it as present (per §4.6, only `itemB` can be absent, on a bye). **Added to `required` in `openapi.yaml`** — a documentation clarification, not a behavior change.
+
+See §7.4 above for the resulting shapes.
 
 ---
 
