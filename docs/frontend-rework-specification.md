@@ -235,7 +235,30 @@ What the frontend's `authService` (§7.1) must still replicate, because it's gen
 
 **Authenticated calls to the backend** (creator-only endpoints) send `Authorization: Bearer <supabase access token>`. The backend verifies it against Supabase (e.g. `supabase.auth.getUser(token)` using the anon key, or JWT-secret verification) to recover the caller's user id — it does not need the service-role key for this.
 
-**Anonymous voter identity** stays a **backend-set, httpOnly, signed cookie** (`voter_id`) — it must *not* move to `localStorage` or any client-readable/settable storage, since the entire point of the HMAC signature is that the voter's own browser JS can't forge or tamper with it. This has a real deployment consequence: the frontend origin and backend origin need a cookie relationship that survives the split — either (a) deploy both under one parent domain (e.g. `app.example.com` + `api.example.com`, cookie `Domain=.example.com`, `SameSite=Lax`), or (b) if they're genuinely cross-site, `SameSite=None; Secure` plus CORS configured with `Access-Control-Allow-Credentials: true` and an explicit (not wildcard) allowed origin, and every frontend fetch to the backend must set `credentials: "include"`. Pick (a) unless there's a hosting constraint forcing (b) — flag this choice to the person doing deployment.
+**Anonymous voter identity** stays a **backend-set, httpOnly, signed cookie** (`voter_id`) — it must *not* move to `localStorage` or any client-readable/settable storage, since the entire point of the HMAC signature is that the voter's own browser JS can't forge or tamper with it. This has a real deployment consequence: the frontend origin and backend origin need a cookie relationship that survives the split.
+
+**Decision (issue #48): topology (a) — one parent domain.** The frontend and backend are hosted as subdomains of a single parent domain (e.g. `app.example.com` frontend, `api.example.com` backend, both under `.example.com`), *not* as genuinely cross-site origins. This is a final decision, not conditional on deployment specifics — there is no stated hosting constraint that forces a cross-site topology, so the cross-site option ((b): `SameSite=None; Secure` + explicit-origin CORS) is rejected. If a future hosting constraint makes a shared parent domain impossible, that's a new decision to revisit explicitly, not a fallback silently taken here.
+
+The vote-cast endpoint (#56) must set the `voter_id` cookie with exactly these attributes:
+
+| Attribute | Value |
+|---|---|
+| `Domain` | `.example.com` (the shared parent domain — leading dot so it's sent to both `app.example.com` and `api.example.com`) |
+| `SameSite` | `Lax` |
+| `Secure` | `true` |
+| `httpOnly` | `true` |
+| `Path` | `/` |
+
+`Secure` is set even though `SameSite=Lax` doesn't strictly require it, because the parent-domain hosting is expected to be HTTPS end-to-end in every deployed environment. Local development implication: a `Secure` cookie is dropped by the browser over plain `http://localhost`, so local dev must either run both apps over HTTPS on loopback (e.g. via a local TLS proxy) or use real subdomains of a shared parent domain (e.g. `app.localtest.dev` / `api.localtest.dev` with a dev certificate) — plain `http://localhost:3000` + `http://localhost:3001` will silently fail to persist the cookie. This is a local-dev setup detail, not a change to the attributes above.
+
+The backend's CORS policy (#50), for every Route Handler under the REST API surface, must be exactly:
+
+- **Allowed origin:** the frontend's exact origin (`https://app.example.com` in production; the equivalent per-environment origin elsewhere, e.g. a staging subdomain) — an explicit origin, never `*`, since credentials are involved and a wildcard origin is incompatible with `Access-Control-Allow-Credentials: true`
+- **`Access-Control-Allow-Credentials`:** `true`
+- **Allowed methods:** `GET, POST, PATCH, DELETE, OPTIONS`
+- **Allowed headers:** `Authorization, Content-Type`
+
+Every frontend fetch to the backend must set `credentials: "include"` so the browser attaches the `voter_id` cookie (and, on relevant requests, sends the `Authorization` header) cross-subdomain.
 
 **Image uploads** must go through the backend (`POST /brackets/{id}/items` as `multipart/form-data`, or an update with a new image file) — the frontend must never hold the Supabase **service-role key**; only the backend does. If a presigned-upload flow is preferred later for large files, that's an additive change to `openapi.yaml`, not required for parity with current behavior.
 
