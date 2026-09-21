@@ -1,0 +1,918 @@
+openapi: 3.0.3
+info:
+  title: Bracket Polling App API
+  version: 0.1.0-draft
+  description: >
+    Draft REST contract for the `backend/` extraction described in
+    `./frontend-rework-specification.md`. This is the authoritative wire
+    contract; that document is the authoritative explanation of *why* each
+    rule exists. Not yet implemented — this file specifies the target API,
+    reverse-engineered from the current Next.js server actions.
+
+    Authentication for creator-only endpoints is a Supabase-issued JWT
+    passed as `Authorization: Bearer <token>` (see specification.md §6) —
+    this API never issues its own sessions. Anonymous voting identity is a
+    signed, httpOnly cookie (`voter_id`) set by this API on `POST
+    /matchups/{matchupId}/votes`; clients must send requests with
+    credentials included so that cookie round-trips.
+servers:
+  - url: https://api.example.com
+    description: Placeholder — actual host TBD by deployment.
+
+tags:
+  - name: brackets
+    description: Creator-owned bracket management (auth required).
+  - name: items
+    description: Bracket item CRUD (creator-owned, DRAFT only).
+  - name: voting
+    description: Public matchup viewing and voting.
+  - name: results
+    description: Public completed-matchup and full-tree views.
+  - name: discovery
+    description: Public bracket discovery.
+  - name: internal
+    description: Operational endpoints not exposed to the frontend services layer.
+
+paths:
+  /brackets/mine:
+    get:
+      tags: [brackets]
+      operationId: listMyBrackets
+      summary: List the authenticated creator's own brackets
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: The caller's brackets, in creation order (newest first).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BracketWithRounds" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /brackets:
+    post:
+      tags: [brackets]
+      operationId: createBracket
+      summary: Create a new draft bracket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateBracketRequest" }
+      responses:
+        "201":
+          description: >
+            Created. `status` is always `DRAFT`. `defaultRoundDurationMinutes`
+            is currently server-assigned (60) — see specification.md §9.1;
+            change it afterward via PATCH .../round-duration.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bracket" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /brackets/{bracketId}:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    get:
+      tags: [brackets]
+      operationId: getBracket
+      summary: Get a bracket's public detail
+      description: >
+        No authentication required — private brackets are reachable by
+        anyone with the id (link-based privacy per the product rules), the
+        creator's identity is not otherwise checked here. Returns richer
+        fields (see `BracketDetail.viewerIsOwner`) when the caller is
+        authenticated as the creator, but never includes the raw item list
+        — use `GET /brackets/{bracketId}/items` (owner-only) for that.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BracketDetail" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /brackets/{bracketId}/items:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    get:
+      tags: [items]
+      operationId: listBracketItems
+      summary: List a bracket's items (creator only)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Items in creation order.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BracketItem" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: Bracket doesn't exist, or the caller doesn't own it (indistinguishable, by design).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    post:
+      tags: [items]
+      operationId: addBracketItem
+      summary: Add an item to a draft bracket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/UpsertItemForm" }
+      responses:
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BracketItem" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Bracket is no longer DRAFT.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: "NOT_DRAFT", message: "This bracket is no longer a draft, so its items can't be changed." }
+        "502":
+          description: Image upload to storage failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: "IMAGE_UPLOAD_FAILED", message: "Failed to upload the image. Please try again." }
+
+  /brackets/{bracketId}/items/{itemId}:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+      - name: itemId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [items]
+      operationId: updateBracketItem
+      summary: Update an item on a draft bracket
+      description: Omit the `image` field entirely to keep the item's existing image.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: "#/components/schemas/UpsertItemForm" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BracketItem" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Bracket is no longer DRAFT.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+    delete:
+      tags: [items]
+      operationId: removeBracketItem
+      summary: Remove an item from a draft bracket
+      security: [{ bearerAuth: [] }]
+      responses:
+        "204": { description: Removed. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Bracket is no longer DRAFT.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /brackets/{bracketId}/round-duration:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    patch:
+      tags: [brackets]
+      operationId: updateRoundDuration
+      summary: Set the default round duration and per-round overrides (draft only)
+      description: >
+        `overrides` keys are absolute round numbers (1-based), never names
+        like "Final"/"Semifinal" — those are a pure display hint the client
+        computes from `⌈log2(itemCount)⌉`, not stored. The valid round
+        range is revalidated server-side from the bracket's current item
+        count regardless of what the client believes it to be.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateRoundDurationRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bracket" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Bracket is no longer DRAFT.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /brackets/{bracketId}/schedule:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    patch:
+      tags: [brackets]
+      operationId: updateSchedule
+      summary: Set immediate vs. scheduled start (draft only)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateScheduleRequest" }
+      responses:
+        "200":
+          description: Updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bracket" }
+        "400": { $ref: "#/components/responses/ValidationError" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Bracket is no longer DRAFT.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /brackets/{bracketId}/publish:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    post:
+      tags: [brackets]
+      operationId: publishBracket
+      summary: Publish a draft bracket, locking its structure and starting/scheduling round 1
+      description: >
+        Requires at least 2 items. Sets status to `SCHEDULED` if
+        `scheduledStartAt` is set, else `ACTIVE` (immediate). Generates and
+        persists round 1's matchups (including byes) from the current item
+        list, in creation order.
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Published.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Bracket" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Already published, or fewer than 2 items.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                alreadyPublished:
+                  value: { code: "NOT_DRAFT", message: "This bracket has already been published." }
+                tooFewItems:
+                  value: { code: "TOO_FEW_ITEMS", message: "Add at least 2 items before publishing this bracket." }
+
+  /brackets/{bracketId}/matchups:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    get:
+      tags: [voting]
+      operationId: listVotableMatchups
+      summary: List the bracket's currently votable matchups, or a status message
+      description: >
+        Public. Returns a status message (bracket not started yet / voting
+        closed between rounds / bracket completed) when there is nothing
+        currently votable, or the list of the current round's matchups
+        otherwise. If exactly one matchup is returned, the frontend should
+        navigate directly to its detail view rather than showing a list of
+        one — this is client-side routing behavior, not a separate backend
+        mode.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/VotableMatchupsResponse" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /brackets/{bracketId}/matchups/{matchupId}:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+      - $ref: "#/components/parameters/MatchupId"
+    get:
+      tags: [voting]
+      operationId: getMatchup
+      summary: Get a single matchup's full voting view
+      description: >
+        Public, but personalizes the response using the caller's identity
+        (bearer token if signed in, else the `voter_id` cookie if present)
+        to report whether they're blocked from voting, whether they've
+        already voted (and on what), and — only once they've voted — both
+        items' current vote counts.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MatchupVotingView" }
+        "404":
+          description: Matchup doesn't exist, or doesn't belong to this bracket.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /matchups/{matchupId}/votes:
+    parameters:
+      - $ref: "#/components/parameters/MatchupId"
+    post:
+      tags: [voting]
+      operationId: castVote
+      summary: Cast a vote (or recover an existing one) on a matchup
+      description: >
+        See specification.md §4.7 for the full ordered rule list. A repeat
+        submission from the same identity for the same matchup+phase is
+        **not** an error — it returns the voter's existing choice with
+        `alreadyVoted: true`. Sets the signed `voter_id` cookie on first
+        anonymous vote if the bracket allows anonymous voting and no valid
+        cookie was already present.
+      security:
+        - bearerAuth: []
+        - {}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CastVoteRequest" }
+      responses:
+        "200":
+          description: Vote recorded or recovered.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CastVoteResponse" }
+        "400":
+          description: Invalid item id, or comment over 500 characters.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          description: Bracket requires an account and the caller isn't signed in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: "SIGN_IN_REQUIRED", message: "Sign in to vote on this bracket." }
+        "404":
+          description: Matchup doesn't exist.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: Round closed, or matchup not currently votable.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                roundClosed:
+                  value: { code: "ROUND_CLOSED", message: "Voting has closed for this round." }
+                notVotable:
+                  value: { code: "MATCHUP_NOT_VOTABLE", message: "Voting isn't open for this matchup." }
+        "429":
+          description: Rate limited (20 votes / 10 minutes per identity, across all brackets).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: "RATE_LIMITED", message: "You've cast a lot of votes very quickly - please wait a few minutes and try again." }
+
+  /brackets/{bracketId}/matchups/{matchupId}/result:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+      - $ref: "#/components/parameters/MatchupId"
+    get:
+      tags: [results]
+      operationId: getMatchupResult
+      summary: Get a completed matchup's result (winner, votes, comments)
+      description: >
+        Public. If the matchup isn't decided yet, returns the `not_completed`
+        variant instead of a result — the frontend should redirect to the
+        live voting view in that case, matching current behavior.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MatchupResult" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /brackets/{bracketId}/tree:
+    parameters:
+      - $ref: "#/components/parameters/BracketId"
+    get:
+      tags: [results]
+      operationId: getBracketTree
+      summary: Get the full bracket visualization (every round, including future placeholder rounds)
+      description: >
+        Public. Works at any bracket status — a DRAFT bracket returns an
+        empty `rounds` array. Includes a `champion` section only once
+        `bracket.status === "COMPLETED"`.
+      security:
+        - bearerAuth: []
+        - {}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BracketTree" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /discover:
+    get:
+      tags: [discovery]
+      operationId: listDiscoverBrackets
+      summary: List public brackets grouped by discovery section
+      description: >
+        No algorithmic ranking — newest-published-first within each of the
+        three fixed groups. `recent` means published but voting hasn't
+        started yet (bracket status SCHEDULED); it is not a general
+        recency view across all statuses.
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoverResponse" }
+
+  /internal/cron/advance-rounds:
+    get:
+      tags: [internal]
+      operationId: advanceRounds
+      summary: Round-advancement sweep (scheduler-triggered only, not part of the frontend services layer)
+      description: >
+        Runs three independent sweeps every invocation — expire active
+        rounds, resolve due tie-breakers, start due scheduled brackets —
+        each isolated so one failure doesn't block the others. Idempotent:
+        safe to invoke more than once for the same due state.
+      security:
+        - cronSecret: []
+      responses:
+        "200":
+          description: Sweep completed (individual item failures are reported in the body, not surfaced as a non-200).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CronSweepResult" }
+        "401":
+          description: Missing or incorrect bearer secret.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Supabase-issued access token. This API verifies it; it does not issue it.
+    cronSecret:
+      type: http
+      scheme: bearer
+      description: Static shared secret (`CRON_SECRET`), compared exactly. Not a user-identity token.
+
+  parameters:
+    BracketId:
+      name: bracketId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    MatchupId:
+      name: matchupId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { code: "UNAUTHORIZED", message: "Sign in to continue." }
+    NotFound:
+      description: >
+        Resource doesn't exist, or (for creator-scoped resources) exists but
+        isn't owned by the caller — the two are indistinguishable by design,
+        so ownership failures never leak existence.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { code: "NOT_FOUND", message: "This bracket no longer exists." }
+    ValidationError:
+      description: One or more fields failed validation.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { code: "VALIDATION_ERROR", message: "Title is required." }
+
+  schemas:
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable slug for branching logic in the frontend.
+        message:
+          type: string
+          description: Human-facing copy — see specification.md for the exact strings to preserve.
+
+    Visibility:
+      type: string
+      enum: [PUBLIC, PRIVATE]
+    VotingRequirement:
+      type: string
+      enum: [ACCOUNT_REQUIRED, ANONYMOUS_ALLOWED]
+    BracketStatus:
+      type: string
+      enum: [DRAFT, SCHEDULED, ACTIVE, COMPLETED]
+    MatchupStatus:
+      type: string
+      enum: [PENDING, ACTIVE, TIE_BREAKER, COMPLETED]
+
+    Bracket:
+      type: object
+      required:
+        - id, creatorId, title, visibility, votingRequirement
+        - defaultRoundDurationMinutes, status, createdAt
+      properties:
+        id: { type: string, format: uuid }
+        creatorId: { type: string }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+        votingRequirement: { $ref: "#/components/schemas/VotingRequirement" }
+        defaultRoundDurationMinutes: { type: integer, minimum: 1 }
+        roundDurationOverrides:
+          type: object
+          description: Map of absolute round number (as a string key) to minutes.
+          additionalProperties: { type: integer, minimum: 1 }
+        scheduledStartAt: { type: string, format: date-time, nullable: true }
+        status: { $ref: "#/components/schemas/BracketStatus" }
+        createdAt: { type: string, format: date-time }
+        publishedAt: { type: string, format: date-time, nullable: true }
+
+    BracketWithRounds:
+      allOf:
+        - $ref: "#/components/schemas/Bracket"
+        - type: object
+          properties:
+            rounds:
+              type: array
+              description: Minimal round summary for computing "current round number" client-side.
+              items:
+                type: object
+                properties:
+                  roundNumber: { type: integer }
+
+    BracketDetail:
+      allOf:
+        - $ref: "#/components/schemas/Bracket"
+        - type: object
+          properties:
+            creator:
+              type: object
+              properties:
+                displayName: { type: string, nullable: true }
+            viewerIsOwner:
+              type: boolean
+              description: True only when the request was authenticated as this bracket's creator.
+
+    CreateBracketRequest:
+      type: object
+      required: [title, visibility, votingRequirement]
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string, nullable: true }
+        visibility: { $ref: "#/components/schemas/Visibility" }
+        votingRequirement: { $ref: "#/components/schemas/VotingRequirement" }
+
+    BracketItem:
+      type: object
+      required: [id, bracketId, title, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        bracketId: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string, nullable: true }
+        imageUrl: { type: string, format: uri, nullable: true }
+        seed:
+          type: integer
+          nullable: true
+          description: Currently unused by any read path — see specification.md §9.3 before relying on it.
+        createdAt: { type: string, format: date-time }
+
+    UpsertItemForm:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+        image:
+          type: string
+          format: binary
+          description: PNG, JPEG, or WebP, ≤5MB. Omit on update to keep the existing image.
+
+    UpdateRoundDurationRequest:
+      type: object
+      required: [defaultRoundDurationMinutes, overrides]
+      properties:
+        defaultRoundDurationMinutes: { type: integer, minimum: 1 }
+        overrides:
+          type: object
+          description: Keys are absolute round numbers (as strings), values are minutes. Omit a round to use the default.
+          additionalProperties: { type: integer, minimum: 1 }
+
+    UpdateScheduleRequest:
+      type: object
+      required: [startMode]
+      properties:
+        startMode: { type: string, enum: [immediate, scheduled] }
+        scheduledStartAt:
+          type: string
+          format: date-time
+          description: >
+            Required and must be strictly in the future when startMode is
+            "scheduled"; ignored otherwise. Must be a full timezone-aware
+            ISO-8601 value — see specification.md §9.4.
+
+    MatchupSummary:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string, format: uuid }
+        status: { $ref: "#/components/schemas/MatchupStatus" }
+        itemA: { $ref: "#/components/schemas/BracketItem" }
+        itemB:
+          type: object
+          allOf: [{ $ref: "#/components/schemas/BracketItem" }]
+          nullable: true
+
+    VotableMatchupsResponse:
+      oneOf:
+        - type: object
+          required: [kind, message]
+          properties:
+            kind: { type: string, enum: [message] }
+            message:
+              type: string
+              description: >
+                One of: not-started ("This bracket hasn't started yet." or a
+                scheduled-time variant), between-rounds ("Voting isn't open
+                right now - check back soon for the next round."), or
+                completed ("This bracket has finished. Voting is closed.").
+        - type: object
+          required: [kind, matchups]
+          properties:
+            kind: { type: string, enum: [matchups] }
+            matchups:
+              type: array
+              items: { $ref: "#/components/schemas/MatchupSummary" }
+
+    VoterContext:
+      oneOf:
+        - type: object
+          required: [kind, message]
+          properties:
+            kind: { type: string, enum: [blocked] }
+            message: { type: string, example: "Sign in to vote on this bracket." }
+        - type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [eligible] }
+            existingVoteItemId: { type: string, format: uuid, nullable: true }
+            voteCounts:
+              type: object
+              nullable: true
+              description: Only present once the caller has already voted.
+              additionalProperties: { type: integer }
+
+    MatchupVotingView:
+      type: object
+      required: [matchup, bracketTitle, voter]
+      properties:
+        matchup: { $ref: "#/components/schemas/MatchupSummary" }
+        bracketTitle: { type: string }
+        isTieBreaker: { type: boolean }
+        countdownEndsAt:
+          type: string
+          format: date-time
+          description: Round's endsAt for a normal ACTIVE matchup, or the matchup's own tieBreakerEndsAt during a tie-breaker.
+        voter: { $ref: "#/components/schemas/VoterContext" }
+
+    CastVoteRequest:
+      type: object
+      required: [itemId]
+      properties:
+        itemId: { type: string, format: uuid }
+        comment:
+          type: string
+          maxLength: 500
+          description: Optional. Whitespace-only is treated as no comment.
+
+    CastVoteResponse:
+      type: object
+      required: [votedItemId, alreadyVoted]
+      properties:
+        votedItemId: { type: string, format: uuid }
+        alreadyVoted:
+          type: boolean
+          description: True when this call recovered a pre-existing vote rather than creating a new one.
+
+    MatchupResult:
+      oneOf:
+        - type: object
+          required: [kind, advancingItem]
+          properties:
+            kind: { type: string, enum: [bye] }
+            advancingItem: { $ref: "#/components/schemas/BracketItem" }
+        - type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [not_completed] }
+        - type: object
+          required: [kind, winner, winnerVoteCount, loser, loserVoteCount, decidedByTieBreaker, comments]
+          properties:
+            kind: { type: string, enum: [decided] }
+            winner: { $ref: "#/components/schemas/BracketItem" }
+            winnerVoteCount: { type: integer }
+            loser: { $ref: "#/components/schemas/BracketItem" }
+            loserVoteCount: { type: integer }
+            decidedByTieBreaker:
+              type: boolean
+              description: Vote counts shown are the combined total across both ORIGINAL and TIE_BREAKER phases regardless of this flag.
+            comments:
+              type: array
+              items:
+                type: object
+                required: [id, itemId, comment, createdAt]
+                properties:
+                  id: { type: string, format: uuid }
+                  itemId: { type: string, format: uuid }
+                  comment: { type: string }
+                  createdAt: { type: string, format: date-time }
+
+    MatchupCell:
+      oneOf:
+        - type: object
+          required: [kind, advancingItem]
+          properties:
+            kind: { type: string, enum: [bye] }
+            advancingItem: { $ref: "#/components/schemas/BracketItem" }
+        - type: object
+          required: [kind, winner, loser]
+          properties:
+            kind: { type: string, enum: [completed] }
+            matchupId: { type: string, format: uuid }
+            winner: { $ref: "#/components/schemas/BracketItem" }
+            loser: { $ref: "#/components/schemas/BracketItem" }
+        - type: object
+          required: [kind, itemA, itemB]
+          properties:
+            kind: { type: string, enum: [active] }
+            matchupId: { type: string, format: uuid }
+            itemA: { $ref: "#/components/schemas/BracketItem" }
+            itemB: { $ref: "#/components/schemas/BracketItem" }
+            isTieBreaker: { type: boolean }
+        - type: object
+          required: [kind, itemA, itemB]
+          properties:
+            kind: { type: string, enum: [pending] }
+            matchupId: { type: string, format: uuid }
+            itemA: { $ref: "#/components/schemas/BracketItem" }
+            itemB:
+              type: object
+              allOf: [{ $ref: "#/components/schemas/BracketItem" }]
+              nullable: true
+        - type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [upcoming] }
+            label:
+              type: string
+              nullable: true
+              description: 'Display hint ("Final" / "Semifinal"), or null.'
+
+    BracketTreeRound:
+      type: object
+      required: [roundNumber, cells]
+      properties:
+        roundNumber: { type: integer }
+        label:
+          type: string
+          nullable: true
+          description: 'Display hint ("Final" / "Semifinal"), or null.'
+        cells:
+          type: array
+          items: { $ref: "#/components/schemas/MatchupCell" }
+
+    BracketTree:
+      type: object
+      required: [rounds]
+      properties:
+        rounds:
+          type: array
+          items: { $ref: "#/components/schemas/BracketTreeRound" }
+        champion:
+          type: object
+          nullable: true
+          description: Present only when the bracket is COMPLETED.
+          required: [winner, tally]
+          properties:
+            winner: { $ref: "#/components/schemas/BracketItem" }
+            tally:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items:
+                type: object
+                properties:
+                  item: { $ref: "#/components/schemas/BracketItem" }
+                  votes: { type: integer }
+
+    DiscoverRow:
+      type: object
+      required: [id, title, status, publishedAt, creatorName]
+      properties:
+        id: { type: string, format: uuid }
+        title: { type: string }
+        status: { $ref: "#/components/schemas/BracketStatus" }
+        publishedAt: { type: string, format: date-time, nullable: true }
+        creatorName:
+          type: string
+          description: Creator's displayName, or a generic fallback ("A creator") when unset.
+
+    DiscoverResponse:
+      type: object
+      required: [recent, active, completed]
+      properties:
+        recent:
+          type: array
+          description: Published (SCHEDULED status) but voting hasn't started yet.
+          items: { $ref: "#/components/schemas/DiscoverRow" }
+        active:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoverRow" }
+        completed:
+          type: array
+          items: { $ref: "#/components/schemas/DiscoverRow" }
+
+    CronSweepResult:
+      type: object
+      required:
+        - ok
+        - expired
+        - evaluated
+        - failed
+        - expiredTieBreakers
+        - tieBreakersResolved
+        - tieBreakersFailed
+        - dueScheduledBrackets
+        - bracketsStarted
+        - bracketsStartFailed
+      properties:
+        ok: { type: boolean }
+        expired: { type: integer }
+        evaluated: { type: integer }
+        failed: { type: integer }
+        expiredTieBreakers: { type: integer }
+        tieBreakersResolved: { type: integer }
+        tieBreakersFailed: { type: integer }
+        dueScheduledBrackets: { type: integer }
+        bracketsStarted: { type: integer }
+        bracketsStartFailed: { type: integer }
