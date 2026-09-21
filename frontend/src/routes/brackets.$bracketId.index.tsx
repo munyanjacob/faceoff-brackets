@@ -1,4 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
@@ -60,6 +61,7 @@ function MatchupCard({ bracketId, matchup }: { bracketId: string; matchup: Match
 
 function BracketPage() {
   const { bracketId } = Route.useParams();
+  const navigate = useNavigate();
 
   const { data: bracket } = useQuery({
     queryKey: ["bracket", bracketId],
@@ -70,6 +72,22 @@ function BracketPage() {
     queryKey: ["matchups", bracketId],
     queryFn: () => votingService.getVotableMatchups(bracketId),
   });
+
+  // Exactly one votable matchup: skip the list and go straight to it.
+  // See docs/frontend-rework-specification.md §5 on the `/brackets/:id` "redirect hub" behavior.
+  const soleMatchup =
+    data?.kind === "matchups" && data.matchups.length === 1 ? data.matchups[0] : null;
+  const soleMatchupId = soleMatchup ? soleMatchup.id : null;
+
+  useEffect(() => {
+    if (soleMatchupId) {
+      navigate({
+        to: "/brackets/$bracketId/matchups/$matchupId",
+        params: { bracketId, matchupId: soleMatchupId },
+        replace: true,
+      });
+    }
+  }, [soleMatchupId, bracketId, navigate]);
 
   return (
     <div className="mx-auto max-w-4xl px-4 pb-24 pt-10">
@@ -97,7 +115,11 @@ function BracketPage() {
         <p className="arena-panel mt-8 p-6 text-muted-foreground">{data.message}</p>
       )}
 
-      {data?.kind === "matchups" && (
+      {soleMatchupId && (
+        <p className="mt-8 text-sm text-muted-foreground">Taking you to the open matchup…</p>
+      )}
+
+      {data?.kind === "matchups" && data.matchups.length > 1 && (
         <div className="mt-8 grid gap-4 sm:grid-cols-2">
           {data.matchups.map((matchup) => (
             <MatchupCard key={matchup.id} bracketId={bracketId} matchup={matchup} />
