@@ -10,6 +10,16 @@ import viteTsConfigPaths from "vite-tsconfig-paths";
 // devDependencies) compiles the SSR server for Vercel's Build Output API;
 // no additional deploy-target package is required.
 export default defineConfig({
+  css: {
+    // @tailwindcss/vite (below) compiles Tailwind directly and needs no
+    // PostCSS plugins of its own. Without this, Vite's PostCSS config
+    // search walks up past frontend/ and picks up the repo-root
+    // postcss.config.mjs (the Next.js backend's own config, which
+    // references @tailwindcss/postcss — not installed under
+    // frontend/node_modules). Pinning an empty inline config here scopes
+    // PostCSS resolution to this project and skips that upward search.
+    postcss: {},
+  },
   plugins: [
     viteTsConfigPaths({
       projects: ["./tsconfig.json"],
