@@ -367,6 +367,12 @@ The current `datetime-local` input is parsed with no timezone information at all
 
 This spec assumes nothing about what `frontend/` is built with beyond "can call a JSON API, can hold a Supabase session, can set `credentials:'include'` on fetches." Next.js (App Router or Pages), a Vite+React SPA, Remix, etc. are all compatible with this contract. That decision belongs to whoever designs the frontend, not this document.
 
+**Hosting decision (issue #47): Vercel.** `frontend/` is a TanStack Start (Vite) app; its `vite.config.ts` previously depended on `@lovable.dev/vite-tanstack-config`, a Lovable-platform-only preset that defaulted the Nitro build target to Cloudflare Workers. That dependency is removed; the config now calls Nitro's own `vercel` preset directly (`nitro({ preset: "vercel" })` from the `nitro` package already in `frontend/package.json`'s devDependencies — no new dependency was needed).
+
+Why Vercel: it's a deployment-neutral, well-supported target for TanStack Start — Nitro ships a first-class `vercel` preset that compiles straight to Vercel's Build Output API (`.vercel/output/{static,functions}`), confirmed by a successful `npm run build`. It also keeps ops simple: `backend/` (the existing Next.js app) already targets Vercel (see `vercel.json` at the repo root), so hosting both apps on the same platform avoids a second hosting account/workflow, and Vercel supports the one-parent-domain subdomain topology §6 already finalized (issue #48) for the `voter_id` cookie (e.g. `app.example.com` frontend, `api.example.com` backend, both Vercel projects under the same parent domain).
+
+This is the build-target decision only — provisioning the actual Vercel project/domain is out of scope here (see #47's "out of scope").
+
 ---
 
 ## 10. Non-functional carry-overs (must not regress)
