@@ -4,6 +4,9 @@ Documents
 
 Commands
 
+The Next.js app lives in `backend/`. Run these from inside `backend/`
+(e.g. `cd backend && npm run dev`):
+
 - `npm install` - install dependencies
 - `npm run dev` - start the dev server
 - `npm test` - run the whole test suite
