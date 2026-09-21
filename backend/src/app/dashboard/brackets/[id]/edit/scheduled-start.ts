@@ -96,3 +96,97 @@ export function validateScheduledStartForm(
 
   return { ok: true, data: { scheduledStartAt: parsed } };
 }
+
+/**
+ * Parses a real, timezone-aware ISO-8601 datetime string (e.g. what
+ * `Date.prototype.toISOString()` produces, or any string carrying an
+ * explicit UTC offset) into a `Date` - or `null` if missing/blank/
+ * unparseable. Never throws.
+ *
+ * This is deliberately **not** `parseDatetimeLocalValue` above, and must
+ * not be replaced by it: `parseDatetimeLocalValue` exists for a
+ * `datetime-local` input's offset-less value, where treating the raw
+ * string as local time is exactly the point (it matches what the picker
+ * showed the creator, in *their* browser's timezone). Handing that same
+ * function an already-timezone-aware string from `PATCH
+ * /brackets/{bracketId}/schedule` (issue #53) would still "work" for a
+ * string that already carries an offset (`new Date` still parses it
+ * correctly), but the function's own contract is "no timezone info -
+ * assume local", which is precisely the *server* process's local
+ * timezone once this runs as a standalone backend - the bug
+ * docs/frontend-rework-specification.md §9.4 flags. Keeping this parse
+ * path separate makes that distinction explicit rather than relying on
+ * `parseDatetimeLocalValue` happening to also handle offset-carrying
+ * strings correctly.
+ *
+ * `new Date(raw)` resolves any real ISO-8601 string with an explicit
+ * offset (or `Z`) to the correct UTC instant regardless of what timezone
+ * this server process itself happens to run in - no local-timezone
+ * reinterpretation is performed here.
+ */
+export function parseIsoDatetimeValue(raw: unknown): Date | null {
+  if (typeof raw !== "string" || raw.trim().length === 0) {
+    return null;
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return parsed;
+}
+
+/** The `PATCH /brackets/{bracketId}/schedule` JSON request body's shape
+ * (docs/openapi.yaml's `UpdateScheduleRequest`), before validation - both
+ * fields are `unknown` because the body is untrusted JSON. */
+export type ScheduleRequestInput = {
+  startMode: unknown;
+  scheduledStartAt: unknown;
+};
+
+/**
+ * Validates the `PATCH /brackets/{bracketId}/schedule` REST endpoint's
+ * JSON body (issue #53) - the same rules as `validateScheduledStartForm`
+ * above (mode is either "immediate"/"scheduled"; immediate never
+ * validates the datetime; scheduled requires a real value strictly after
+ * `now`), reading `startMode`/`scheduledStartAt` directly off a parsed
+ * JSON object instead of `FormData`.
+ *
+ * The one deliberate difference from `validateScheduledStartForm`:
+ * `scheduledStartAt` is parsed with `parseIsoDatetimeValue` (real
+ * timezone-aware ISO-8601), never `parseDatetimeLocalValue` (naive
+ * `datetime-local` local-time parsing) - see `parseIsoDatetimeValue`'s
+ * doc comment and spec §9.4. `now` is still always the caller's own
+ * reading of the current instant (the route handler passes `new Date()`
+ * at request time), so "future" is judged against the server's clock,
+ * never a client-supplied value.
+ */
+export function validateScheduleRequest(
+  input: ScheduleRequestInput,
+  now: Date
+): ScheduledStartValidationResult {
+  if (input.startMode !== "scheduled") {
+    // Same "anything other than the literal 'scheduled' value leaves the
+    // bracket unscheduled rather than erroring" tolerance as
+    // `validateScheduledStartForm` - matches "Start immediately" being the
+    // default choice, and openapi.yaml's "ignored otherwise" note on
+    // `scheduledStartAt`.
+    return { ok: true, data: { scheduledStartAt: null } };
+  }
+
+  const parsed = parseIsoDatetimeValue(input.scheduledStartAt);
+  if (parsed === null) {
+    return {
+      ok: false,
+      error: "A scheduled start requires a valid date and time.",
+    };
+  }
+
+  if (parsed.getTime() <= now.getTime()) {
+    return {
+      ok: false,
+      error: "The scheduled start time must be in the future.",
+    };
+  }
+
+  return { ok: true, data: { scheduledStartAt: parsed } };
+}
