@@ -20,18 +20,19 @@ import type {
   BracketDetail,
   BracketItem,
   BracketTree,
+  BracketTreeRound,
   BracketWithRounds,
   CastVoteRequest,
   CastVoteResponse,
   CreateBracketRequest,
   DiscoverResponse,
   DiscoverRow,
+  MatchupCell,
   MatchupResult,
   MatchupStatus,
   MatchupSummary,
   MatchupVotingView,
   RoundStatus,
-  TreeCell,
   UpdateRoundDurationRequest,
   UpdateScheduleRequest,
   UpsertItemInput,
@@ -449,6 +450,36 @@ function toSummary(db: Db, matchup: MatchupRow): MatchupSummary {
   };
 }
 
+/** Maps a matchup row to its MatchupCell variant for the tree view (§9.6 of the spec). */
+function toCell(db: Db, matchup: MatchupRow): MatchupCell {
+  const itemA = item(db, matchup.itemAId)!;
+  const itemB = item(db, matchup.itemBId);
+
+  if (!matchup.itemBId) {
+    return { kind: "bye", matchupId: matchup.id, advancingItem: itemA };
+  }
+  if (matchup.status === "COMPLETED") {
+    const winnerId = matchup.winnerItemId!;
+    const loserId = winnerId === matchup.itemAId ? matchup.itemBId : matchup.itemAId!;
+    return {
+      kind: "completed",
+      matchupId: matchup.id,
+      winner: item(db, winnerId)!,
+      loser: item(db, loserId)!,
+    };
+  }
+  if (matchup.status === "ACTIVE" || matchup.status === "TIE_BREAKER") {
+    return {
+      kind: "active",
+      matchupId: matchup.id,
+      itemA,
+      itemB: itemB!,
+      isTieBreaker: matchup.status === "TIE_BREAKER",
+    };
+  }
+  return { kind: "pending", matchupId: matchup.id, itemA, itemB };
+}
+
 function ownedDraft(db: Db, bracketId: string, userId: string): Bracket {
   const bracket = db.brackets.find((b) => b.id === bracketId && b.creatorId === userId);
   if (!bracket) fail("NOT_FOUND", "This bracket no longer exists.", 404);
@@ -859,7 +890,12 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
           decidedByTieBreaker,
           comments: db.votes
             .filter((v) => v.matchupId === matchupId && v.comment)
-            .map((v) => ({ comment: v.comment!, itemId: v.itemId, createdAt: v.createdAt })),
+            .map((v) => ({
+              id: v.id,
+              comment: v.comment!,
+              itemId: v.itemId,
+              createdAt: v.createdAt,
+            })),
         };
       });
     },
@@ -869,20 +905,14 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
         const bracket = db.brackets.find((b) => b.id === bracketId);
         if (!bracket) fail("NOT_FOUND", "This bracket no longer exists.", 404);
         const totalRounds = totalRoundsFor(itemsOf(db, bracketId).length);
-        const rounds = [];
+        const rounds: BracketTreeRound[] = [];
         for (let n = 1; n <= Math.max(totalRounds, 1); n++) {
           const round = db.rounds.find((r) => r.bracketId === bracketId && r.roundNumber === n);
-          const cells: TreeCell[] = round
+          const cells: MatchupCell[] = round
             ? db.matchups
                 .filter((m) => m.roundId === round.id)
                 .sort((a, b) => a.position - b.position)
-                .map((m) => ({
-                  matchupId: m.id,
-                  status: m.status,
-                  itemA: item(db, m.itemAId),
-                  itemB: item(db, m.itemBId),
-                  winnerItemId: m.winnerItemId,
-                }))
+                .map((m) => toCell(db, m))
             : [];
           rounds.push({
             roundNumber: n,

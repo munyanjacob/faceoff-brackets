@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
-import { resultsService, type TreeCell } from "@/services";
+import { resultsService, type MatchupCell } from "@/services";
 
 export const Route = createFileRoute("/brackets/$bracketId/tree")({
   head: () => ({
@@ -24,18 +24,49 @@ export const Route = createFileRoute("/brackets/$bracketId/tree")({
   component: TreePage,
 });
 
-function Cell({ bracketId, cell }: { bracketId: string; cell: TreeCell }) {
-  const side = (title: string | null, itemId: string | null) => (
+function Side({ title, highlight }: { title: string; highlight: boolean }) {
+  return (
     <div
       className={`flex items-center justify-between rounded px-3 py-2 text-sm ${
-        itemId && cell.winnerItemId === itemId
-          ? "bg-primary/15 font-semibold text-primary"
-          : "bg-secondary/40 text-muted-foreground"
+        highlight ? "bg-primary/15 font-semibold text-primary" : "bg-secondary/40 text-muted-foreground"
       }`}
     >
-      <span className="truncate">{title ?? "TBD"}</span>
+      <span className="truncate">{title}</span>
     </div>
   );
+}
+
+/**
+ * cell is the discriminated MatchupCell union from openapi.yaml (kept
+ * discriminated rather than a flatter {status, itemA, itemB, winnerItemId}
+ * shape — see issue #49 / specification.md §9.6). "upcoming" cells (a
+ * round that hasn't been generated yet) have no matchupId to link to.
+ */
+function Cell({ bracketId, cell }: { bracketId: string; cell: MatchupCell }) {
+  if (cell.kind === "upcoming") {
+    return (
+      <div className="arena-panel block space-y-2 p-3 opacity-60">
+        <Side title="TBD" highlight={false} />
+        <Side title="TBD" highlight={false} />
+      </div>
+    );
+  }
+
+  const [top, bottom] =
+    cell.kind === "bye"
+      ? [
+          { title: cell.advancingItem.title, highlight: true },
+          { title: "Bye", highlight: false },
+        ]
+      : cell.kind === "completed"
+        ? [
+            { title: cell.winner.title, highlight: true },
+            { title: cell.loser.title, highlight: false },
+          ]
+        : [
+            { title: cell.itemA.title, highlight: false },
+            { title: cell.itemB?.title ?? "TBD", highlight: false },
+          ];
 
   return (
     <Link
@@ -43,8 +74,8 @@ function Cell({ bracketId, cell }: { bracketId: string; cell: TreeCell }) {
       params={{ bracketId, matchupId: cell.matchupId }}
       className="arena-panel block space-y-2 p-3 transition-transform hover:-translate-y-0.5"
     >
-      {side(cell.itemA?.title ?? null, cell.itemA?.id ?? null)}
-      {side(cell.itemB?.title ?? null, cell.itemB?.id ?? null)}
+      <Side title={top.title} highlight={top.highlight} />
+      <Side title={bottom.title} highlight={bottom.highlight} />
     </Link>
   );
 }
@@ -98,8 +129,12 @@ function TreePage() {
                 {round.status !== "NOT_STARTED" && <StatusPill status={round.status} />}
               </div>
               <div className="mt-4 space-y-3">
-                {round.cells.map((cell) => (
-                  <Cell key={cell.matchupId} bracketId={bracketId} cell={cell} />
+                {round.cells.map((cell, index) => (
+                  <Cell
+                    key={cell.kind === "upcoming" ? `upcoming-${index}` : cell.matchupId}
+                    bracketId={bracketId}
+                    cell={cell}
+                  />
                 ))}
               </div>
             </div>

@@ -69,6 +69,7 @@ export interface UpdateScheduleRequest {
 export interface MatchupSummary {
   id: string;
   status: MatchupStatus;
+  /** Always present — only itemB can be absent (a bye). See specification.md §4.6. */
   itemA: BracketItem;
   itemB: BracketItem | null;
 }
@@ -104,6 +105,8 @@ export interface CastVoteResponse {
 }
 
 export interface MatchupComment {
+  /** The underlying Vote row's id. */
+  id: string;
   comment: string;
   itemId: string;
   createdAt: string;
@@ -122,26 +125,47 @@ export type MatchupResult =
       comments: MatchupComment[];
     };
 
-export interface TreeCell {
-  matchupId: string;
-  status: MatchupStatus;
-  itemA: BracketItem | null;
-  itemB: BracketItem | null;
-  winnerItemId: string | null;
-}
+/**
+ * A discriminated union, deliberately — not a flatter
+ * `{status, itemA, itemB, winnerItemId}` shape. That flat shape can
+ * represent illegal states (e.g. `status: "COMPLETED"` with a null
+ * `winnerItemId`, or a `winnerItemId` that isn't either item's id); this
+ * union makes those states unrepresentable. See issue #49.
+ */
+export type MatchupCell =
+  | { kind: "bye"; matchupId: string; advancingItem: BracketItem }
+  | { kind: "completed"; matchupId: string; winner: BracketItem; loser: BracketItem }
+  | {
+      kind: "active";
+      matchupId: string;
+      itemA: BracketItem;
+      itemB: BracketItem;
+      isTieBreaker?: boolean;
+    }
+  | { kind: "pending"; matchupId: string; itemA: BracketItem; itemB: BracketItem | null }
+  | { kind: "upcoming"; label: string };
 
-export interface TreeRound {
+/**
+ * Tree-rendering-only status: like RoundStatus, plus NOT_STARTED, meaning no
+ * Round row exists yet for this round number. The persisted Round entity's
+ * own status never has this value — it's synthesized for this view only.
+ */
+export type TreeRoundStatus = RoundStatus | "NOT_STARTED";
+
+export interface BracketTreeRound {
   roundNumber: number;
+  status: TreeRoundStatus;
+  /** Display hint ("Final" / "Semifinal" / "Round N") — always present. */
   label: string;
-  status: RoundStatus | "NOT_STARTED";
-  cells: TreeCell[];
+  /** Empty when status is NOT_STARTED (no matchups generated for this round yet). */
+  cells: MatchupCell[];
 }
 
 export interface BracketTree {
   bracketTitle: string;
   bracketStatus: BracketStatus;
   totalRounds: number;
-  rounds: TreeRound[];
+  rounds: BracketTreeRound[];
   champion: {
     item: BracketItem;
     finalTally: { item: BracketItem; votes: number }[];

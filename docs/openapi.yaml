@@ -440,8 +440,11 @@ paths:
       operationId: getBracketTree
       summary: Get the full bracket visualization (every round, including future placeholder rounds)
       description: >
-        Public. Works at any bracket status — a DRAFT bracket returns an
-        empty `rounds` array. Includes a `champion` section only once
+        Public. Works at any bracket status — a bracket with no rounds
+        started yet (e.g. DRAFT) still returns a `rounds` array (at least
+        one entry) with each round's `status: "NOT_STARTED"` and an empty
+        `cells` array, so the client always has a round count/label to
+        render placeholders from. Includes a `champion` section only once
         `bracket.status === "COMPLETED"`.
       security:
         - bearerAuth: []
@@ -673,7 +676,11 @@ components:
 
     MatchupSummary:
       type: object
-      required: [id, status]
+      description: >
+        itemA is always present — per specification.md §4.6, the
+        bye/pairing algorithm always assigns itemA; only itemB can be
+        absent (a bye).
+      required: [id, status, itemA]
       properties:
         id: { type: string, format: uuid }
         status: { $ref: "#/components/schemas/MatchupStatus" }
@@ -732,7 +739,12 @@ components:
         countdownEndsAt:
           type: string
           format: date-time
-          description: Round's endsAt for a normal ACTIVE matchup, or the matchup's own tieBreakerEndsAt during a tie-breaker.
+          nullable: true
+          description: >
+            Round's endsAt for a normal ACTIVE matchup, or the matchup's own
+            tieBreakerEndsAt during a tie-breaker. Null when there is no
+            active countdown yet (e.g. a PENDING matchup in a SCHEDULED
+            bracket's round 1, before the round has an endsAt).
         voter: { $ref: "#/components/schemas/VoterContext" }
 
     CastVoteRequest:
@@ -778,21 +790,32 @@ components:
               description: Vote counts shown are the combined total across both ORIGINAL and TIE_BREAKER phases regardless of this flag.
             comments:
               type: array
-              items:
-                type: object
-                required: [id, itemId, comment, createdAt]
-                properties:
-                  id: { type: string, format: uuid }
-                  itemId: { type: string, format: uuid }
-                  comment: { type: string }
-                  createdAt: { type: string, format: date-time }
+              items: { $ref: "#/components/schemas/MatchupComment" }
+
+    MatchupComment:
+      type: object
+      required: [id, itemId, comment, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The underlying Vote row's id.
+        itemId: { type: string, format: uuid }
+        comment: { type: string }
+        createdAt: { type: string, format: date-time }
 
     MatchupCell:
       oneOf:
         - type: object
-          required: [kind, advancingItem]
+          required: [kind, matchupId, advancingItem]
           properties:
             kind: { type: string, enum: [bye] }
+            matchupId:
+              type: string
+              format: uuid
+              description: >
+                So the client can still link to this bye's result page
+                (specification.md §5's "no voting took place" variant).
             advancingItem: { $ref: "#/components/schemas/BracketItem" }
         - type: object
           required: [kind, winner, loser]
@@ -825,26 +848,42 @@ components:
             kind: { type: string, enum: [upcoming] }
             label:
               type: string
-              nullable: true
-              description: 'Display hint ("Final" / "Semifinal"), or null.'
+              description: 'Display hint ("Final" / "Semifinal" / "Round N").'
+
+    RoundStatus:
+      type: string
+      enum: [PENDING, ACTIVE, COMPLETED]
+
+    TreeRoundStatus:
+      type: string
+      description: >
+        Like RoundStatus, plus NOT_STARTED — a tree-rendering-only value
+        meaning no Round row exists yet for this round number (the bracket
+        hasn't progressed this far). The persisted Round entity's own status
+        never has this value; it's synthesized for this view only.
+      enum: [PENDING, ACTIVE, COMPLETED, NOT_STARTED]
 
     BracketTreeRound:
       type: object
-      required: [roundNumber, cells]
+      required: [roundNumber, status, label, cells]
       properties:
         roundNumber: { type: integer }
+        status: { $ref: "#/components/schemas/TreeRoundStatus" }
         label:
           type: string
-          nullable: true
-          description: 'Display hint ("Final" / "Semifinal"), or null.'
+          description: 'Display hint ("Final" / "Semifinal" / "Round N") — always present.'
         cells:
           type: array
+          description: Empty when status is NOT_STARTED (no matchups generated for this round yet).
           items: { $ref: "#/components/schemas/MatchupCell" }
 
     BracketTree:
       type: object
-      required: [rounds]
+      required: [bracketTitle, bracketStatus, totalRounds, rounds]
       properties:
+        bracketTitle: { type: string }
+        bracketStatus: { $ref: "#/components/schemas/BracketStatus" }
+        totalRounds: { type: integer }
         rounds:
           type: array
           items: { $ref: "#/components/schemas/BracketTreeRound" }
@@ -852,10 +891,10 @@ components:
           type: object
           nullable: true
           description: Present only when the bracket is COMPLETED.
-          required: [winner, tally]
+          required: [item, finalTally]
           properties:
-            winner: { $ref: "#/components/schemas/BracketItem" }
-            tally:
+            item: { $ref: "#/components/schemas/BracketItem" }
+            finalTally:
               type: array
               minItems: 2
               maxItems: 2

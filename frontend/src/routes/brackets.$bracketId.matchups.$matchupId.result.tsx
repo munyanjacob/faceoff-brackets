@@ -91,8 +91,8 @@ function ResultPage() {
               <p className="mt-3 text-sm text-muted-foreground">No comments on this matchup.</p>
             ) : (
               <ul className="mt-4 space-y-3">
-                {data.comments.map((comment, index) => (
-                  <li key={index} className="arena-panel p-4">
+                {data.comments.map((comment) => (
+                  <li key={comment.id} className="arena-panel p-4">
                     <p className="text-sm">{comment.comment}</p>
                     <p className="mt-2 text-xs text-muted-foreground">
                       voted{" "}
