@@ -1,13 +1,16 @@
 openapi: 3.0.3
 info:
   title: Bracket Polling App API
-  version: 0.1.0-draft
+  version: 1.0.0
+  license:
+    name: UNLICENSED
   description: >
-    Draft REST contract for the `backend/` extraction described in
+    REST contract for the `backend/` extraction described in
     `./frontend-rework-specification.md`. This is the authoritative wire
     contract; that document is the authoritative explanation of *why* each
-    rule exists. Not yet implemented — this file specifies the target API,
-    reverse-engineered from the current Next.js server actions.
+    rule exists. Implemented in full (issues #50-#60) as Next.js Route
+    Handlers under `backend/src/app/api/**/route.ts` — this file documents
+    the shipped API, reconciled against that implementation in issue #68.
 
     Authentication for creator-only endpoints is a Supabase-issued JWT
     passed as `Authorization: Bearer <token>` (see specification.md §6) —
@@ -15,9 +18,24 @@ info:
     signed, httpOnly cookie (`voter_id`) set by this API on `POST
     /matchups/{matchupId}/votes`; clients must send requests with
     credentials included so that cookie round-trips.
+
+    Every operation also falls back to a generic `500` with
+    `{code: "UNEXPECTED", message: "Something went wrong. Please try
+    again."}` for any unhandled failure (`backend/src/lib/api/errors.ts`'s
+    `withErrorHandling` wraps every Route Handler in this) — omitted from
+    each operation's individual `responses` below to avoid repeating it
+    fifteen times, but real and universal.
 servers:
   - url: https://api.example.com
-    description: Placeholder — actual host TBD by deployment.
+    description: >
+      Placeholder — actual host TBD by deployment. `frontend-rework-
+      specification.md` §9.5 finalized Vercel as the *build target* (issue
+      #47) and the one-parent-domain topology (issue #48), but the real
+      production domain hasn't been provisioned yet (see #47's own "out of
+      scope"); this placeholder mirrors the same one `backend/src/lib/
+      api/cors.ts`'s `DEFAULT_ALLOWED_ORIGIN` and `matchups/[matchupId]/
+      votes/route.ts`'s `DEFAULT_VOTER_COOKIE_DOMAIN` use. `no-server-
+      example.com` is disabled in `redocly.yaml` for exactly this reason.
 
 tags:
   - name: brackets
@@ -381,6 +399,11 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+              examples:
+                invalidItem:
+                  value: { code: "INVALID_ITEM", message: "That's not a valid choice for this matchup." }
+                commentTooLong:
+                  value: { code: "COMMENT_TOO_LONG", message: "Comments can be at most 500 characters." }
         "401":
           description: Bracket requires an account and the caller isn't signed in.
           content:
@@ -392,6 +415,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+              example: { code: "MATCHUP_NOT_FOUND", message: "This matchup no longer exists." }
         "409":
           description: Round closed, or matchup not currently votable.
           content:
@@ -475,7 +499,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/DiscoverResponse" }
 
-  /internal/cron/advance-rounds:
+  /cron/advance-rounds:
     get:
       tags: [internal]
       operationId: advanceRounds
@@ -485,6 +509,13 @@ paths:
         rounds, resolve due tie-breakers, start due scheduled brackets —
         each isolated so one failure doesn't block the others. Idempotent:
         safe to invoke more than once for the same due state.
+
+        Path matches the real route exactly: `backend/src/app/api/cron/
+        advance-rounds/route.ts` and `backend/vercel.json`'s cron entry are
+        both `/api/cron/advance-rounds` (i.e. `/cron/advance-rounds` once
+        the `/api` server prefix is applied) — there's no literal `internal/`
+        path segment despite the `internal` tag above, which only
+        classifies this as not part of the frontend services layer (§7).
       security:
         - cronSecret: []
       responses:
@@ -571,8 +602,14 @@ components:
     Bracket:
       type: object
       required:
-        - id, creatorId, title, visibility, votingRequirement
-        - defaultRoundDurationMinutes, status, createdAt
+        - id
+        - creatorId
+        - title
+        - visibility
+        - votingRequirement
+        - defaultRoundDurationMinutes
+        - status
+        - createdAt
       properties:
         id: { type: string, format: uuid }
         creatorId: { type: string }
@@ -637,7 +674,11 @@ components:
         seed:
           type: integer
           nullable: true
-          description: Currently unused by any read path — see specification.md §9.3 before relying on it.
+          description: >
+            Never written or read by any endpoint — bracket order is still
+            implicit `createdAt` ascending everywhere (round 1 pairing,
+            later-round pairing, the tree view, `/discover`). Decided,
+            not merely unimplemented — see specification.md §9.3.
         createdAt: { type: string, format: date-time }
 
     UpsertItemForm:
@@ -850,17 +891,15 @@ components:
               type: string
               description: 'Display hint ("Final" / "Semifinal" / "Round N").'
 
-    RoundStatus:
-      type: string
-      enum: [PENDING, ACTIVE, COMPLETED]
-
     TreeRoundStatus:
       type: string
       description: >
-        Like RoundStatus, plus NOT_STARTED — a tree-rendering-only value
-        meaning no Round row exists yet for this round number (the bracket
-        hasn't progressed this far). The persisted Round entity's own status
-        never has this value; it's synthesized for this view only.
+        The persisted Round entity's own status (`PENDING | ACTIVE |
+        COMPLETED`, `prisma/schema.prisma`'s `RoundStatus` enum), plus
+        NOT_STARTED — a tree-rendering-only value meaning no Round row
+        exists yet for this round number (the bracket hasn't progressed
+        this far). The persisted Round entity's own status never has this
+        value; it's synthesized for this view only.
       enum: [PENDING, ACTIVE, COMPLETED, NOT_STARTED]
 
     BracketTreeRound:
