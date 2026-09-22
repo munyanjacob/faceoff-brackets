@@ -133,7 +133,7 @@ function ItemsPanel({ bracketId, locked }: { bracketId: string; locked: boolean 
       <div className="mt-5 space-y-3">
         {items?.map((item) =>
           editingId === item.id ? (
-            <div key={item.id} className="rounded-lg border border-border p-4">
+            <div key={item.id} className="arena-panel p-4">
               <ItemForm
                 initial={item}
                 submitLabel="Save"
@@ -146,10 +146,7 @@ function ItemsPanel({ bracketId, locked }: { bracketId: string; locked: boolean 
               />
             </div>
           ) : (
-            <div
-              key={item.id}
-              className="flex items-center gap-4 rounded-lg border border-border bg-secondary/30 p-4"
-            >
+            <div key={item.id} className="arena-panel flex items-center gap-4 p-4">
               {item.imageUrl && (
                 <img
                   src={item.imageUrl}
