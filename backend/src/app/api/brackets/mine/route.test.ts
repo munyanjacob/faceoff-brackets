@@ -66,7 +66,7 @@ describe("GET /brackets/mine", () => {
     });
   });
 
-  it("returns 200 with the brackets exactly as the query resolves them", async () => {
+  it("returns 200 with the brackets as the query resolves them, normalizing a null roundDurationOverrides to {}", async () => {
     getAuthenticatedUserId.mockResolvedValue("creator-1");
     const brackets = [
       {
@@ -94,6 +94,7 @@ describe("GET /brackets/mine", () => {
     expect(body).toEqual([
       {
         ...brackets[0],
+        roundDurationOverrides: {},
         createdAt: "2026-01-01T00:00:00.000Z",
       },
     ]);

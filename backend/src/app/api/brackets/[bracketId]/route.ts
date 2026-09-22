@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUserId } from "@/lib/api/auth";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // GET /brackets/{bracketId} (issue #51, docs/openapi.yaml's getBracket)
 //
@@ -52,7 +53,17 @@ export const GET = async (
     const viewerIsOwner =
       viewerUserId !== null && viewerUserId === bracket.creatorId;
 
-    return NextResponse.json({ ...bracket, viewerIsOwner });
+    return NextResponse.json({
+      ...bracket,
+      // The DB column is nullable and a fresh bracket has never had an
+      // override set (see round-duration.ts's comment); openapi.yaml
+      // documents this field as always an object, never null, so normalize
+      // here rather than leaking the raw column.
+      roundDurationOverrides: parseStoredRoundDurationOverrides(
+        bracket.roundDurationOverrides
+      ),
+      viewerIsOwner,
+    });
   })();
 
   return withCors(request, response);

@@ -158,7 +158,13 @@ describe("PATCH /brackets/{bracketId}/schedule", () => {
       data: { scheduledStartAt: null },
     });
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual(updated);
+    // roundDurationOverrides is normalized to {} even though the mocked
+    // update() result above doesn't include it at all - see
+    // brackets/[bracketId]/route.ts's identical normalization.
+    await expect(response.json()).resolves.toEqual({
+      ...updated,
+      roundDurationOverrides: {},
+    });
   });
 
   it("ignores scheduledStartAt entirely when startMode is immediate, even if it's malformed", async () => {
@@ -260,7 +266,10 @@ describe("PATCH /brackets/{bracketId}/schedule", () => {
       data: { scheduledStartAt: new Date(FAR_FUTURE_UTC) },
     });
     expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual(updated);
+    await expect(response.json()).resolves.toEqual({
+      ...updated,
+      roundDurationOverrides: {},
+    });
   });
 
   // *** The behavior-change proof (issue #53 / spec §9.4) ***

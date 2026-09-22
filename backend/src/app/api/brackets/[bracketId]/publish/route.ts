@@ -158,7 +158,15 @@ async function handlePost(
     return updated;
   });
 
-  return NextResponse.json(updatedBracket);
+  return NextResponse.json({
+    ...updatedBracket,
+    // See brackets/[bracketId]/route.ts's identical normalization - this
+    // update only touches status/publishedAt, so the column is still null
+    // when round-duration has never been PATCHed for this bracket.
+    roundDurationOverrides: parseStoredRoundDurationOverrides(
+      updatedBracket.roundDurationOverrides
+    ),
+  });
 }
 
 /**

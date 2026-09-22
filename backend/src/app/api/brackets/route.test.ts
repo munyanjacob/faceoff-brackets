@@ -183,6 +183,9 @@ describe("POST /brackets", () => {
     expect(response.status).toBe(201);
     await expect(response.json()).resolves.toEqual({
       ...created,
+      // Normalized from the DB's null - openapi.yaml documents this field
+      // as always an object, never null.
+      roundDurationOverrides: {},
       createdAt: "2026-01-01T00:00:00.000Z",
     });
   });

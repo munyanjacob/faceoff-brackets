@@ -4,6 +4,7 @@ import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
 import { validateCreateBracketForm } from "@/app/dashboard/brackets/new/validation";
+import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // POST /brackets (issue #51, docs/openapi.yaml's createBracket)
 //
@@ -89,7 +90,18 @@ export const POST = async (request: Request): Promise<Response> => {
       },
     });
 
-    return NextResponse.json(bracket, { status: 201 });
+    return NextResponse.json(
+      {
+        ...bracket,
+        // See brackets/[bracketId]/route.ts's identical normalization -
+        // a fresh bracket's column is null, but openapi.yaml documents
+        // this field as always an object.
+        roundDurationOverrides: parseStoredRoundDurationOverrides(
+          bracket.roundDurationOverrides
+        ),
+      },
+      { status: 201 }
+    );
   })();
 
   return withCors(request, response);

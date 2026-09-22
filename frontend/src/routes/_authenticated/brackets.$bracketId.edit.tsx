@@ -249,7 +249,7 @@ function TimingPanel({ bracket }: { bracket: BracketDetail }) {
     String(bracket.defaultRoundDurationMinutes),
   );
   const [overrides, setOverrides] = useState<Record<string, number>>(
-    bracket.roundDurationOverrides,
+    bracket.roundDurationOverrides ?? {},
   );
   const [startMode, setStartMode] = useState<"immediate" | "scheduled">(
     bracket.scheduledStartAt ? "scheduled" : "immediate",
@@ -267,7 +267,7 @@ function TimingPanel({ bracket }: { bracket: BracketDetail }) {
   const rounds = totalRoundsFor(items?.length ?? 0);
 
   useEffect(() => {
-    setOverrides(bracket.roundDurationOverrides);
+    setOverrides(bracket.roundDurationOverrides ?? {});
   }, [bracket.roundDurationOverrides]);
 
   async function save() {

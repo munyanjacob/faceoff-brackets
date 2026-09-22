@@ -125,7 +125,7 @@ describe("GET /brackets/{bracketId}", () => {
     expect(body.viewerIsOwner).toBe(false);
   });
 
-  it("includes every Bracket field alongside creator/viewerIsOwner", async () => {
+  it("includes every Bracket field alongside creator/viewerIsOwner, normalizing a null roundDurationOverrides to {}", async () => {
     getAuthenticatedUserId.mockResolvedValue(null);
     findUnique.mockResolvedValue(BRACKET);
 
@@ -134,6 +134,7 @@ describe("GET /brackets/{bracketId}", () => {
 
     expect(body).toEqual({
       ...BRACKET,
+      roundDurationOverrides: {},
       createdAt: "2026-01-01T00:00:00.000Z",
       viewerIsOwner: false,
     });

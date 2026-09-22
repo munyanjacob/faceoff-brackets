@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { withErrorHandling } from "@/lib/api/errors";
+import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // GET /brackets/mine (issue #51, docs/openapi.yaml's listMyBrackets)
 //
@@ -30,7 +31,15 @@ export const GET = async (request: Request): Promise<Response> => {
       include: { rounds: { select: { roundNumber: true } } },
     });
 
-    return NextResponse.json(brackets);
+    return NextResponse.json(
+      brackets.map((bracket) => ({
+        ...bracket,
+        // See brackets/[bracketId]/route.ts's identical normalization.
+        roundDurationOverrides: parseStoredRoundDurationOverrides(
+          bracket.roundDurationOverrides
+        ),
+      }))
+    );
   })();
 
   return withCors(request, response);

@@ -7,6 +7,7 @@ import {
   type ScheduleRequestInput,
   validateScheduleRequest,
 } from "@/app/dashboard/brackets/[id]/edit/scheduled-start";
+import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // PATCH /brackets/{bracketId}/schedule (issue #53, docs/openapi.yaml's
 // updateSchedule)
@@ -109,7 +110,15 @@ export const PATCH = async (
       data: { scheduledStartAt: validated.data.scheduledStartAt },
     });
 
-    return NextResponse.json(updated);
+    return NextResponse.json({
+      ...updated,
+      // See brackets/[bracketId]/route.ts's identical normalization - this
+      // update only touches scheduledStartAt, so the column is still null
+      // when round-duration has never been PATCHed for this bracket.
+      roundDurationOverrides: parseStoredRoundDurationOverrides(
+        updated.roundDurationOverrides
+      ),
+    });
   })();
 
   return withCors(request, response);
