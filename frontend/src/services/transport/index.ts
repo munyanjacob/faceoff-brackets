@@ -21,7 +21,15 @@ async function getCaller(): Promise<Caller | null> {
   };
 }
 
-/** The single backend entry point for the whole app. */
+/**
+ * The single backend entry point for the whole app.
+ *
+ * Set VITE_API_BASE_URL (see frontend/.env.example) to talk to the real
+ * backend/ REST API via httpTransport.ts. Leave it unset to fall back to
+ * mockTransport.ts's in-browser stand-in - kept, deliberately, as an
+ * opt-in dev/demo fallback rather than deleted now that the real backend
+ * exists (issue #61; see docs/frontend-rework-specification.md §9.7).
+ */
 export const transport: ApiTransport = baseUrl
   ? createHttpTransport(baseUrl, getCaller)
   : createMockTransport(getCaller);
