@@ -388,6 +388,12 @@ This is the build-target decision only — provisioning the actual Vercel projec
 
 See §7.4 above for the resulting shapes.
 
+### 9.7 `mockTransport.ts`'s fate once the real backend exists (issue #61)
+
+`frontend/src/services/transport/mockTransport.ts` was written as a contract stand-in while `backend/` didn't exist yet (§7's services layer talks to `ApiTransport`, an interface `mockTransport.ts` and `httpTransport.ts` both implement). Now that `backend/` implements the full surface (#50-#60) and `frontend/src/services/transport/index.ts` can point at it via `VITE_API_BASE_URL`, `mockTransport.ts` isn't load-bearing for production use anymore.
+
+**Decision: kept, as an opt-in dev/demo fallback** — `transport/index.ts` already selects it precisely when `VITE_API_BASE_URL` is unset, which is exactly the "opt-in" shape: set the env var (as `frontend/.env`/`frontend/.env.example` now document) to run against the real backend; leave it unset to run the frontend standalone (no `backend/` dev server, no Supabase project needed for data) against `localStorage`, seeded with a few demo brackets. That's still useful — frontend-only work, demos, and any environment without a reachable backend all benefit from it, and it already faithfully re-implements every business rule in §4 (status machines, byes, tie-breakers, the round-advancement sweep, the vote rate limit) so it doesn't silently drift into a worse stand-in over time. Deleting ~950 lines of working, self-contained code isn't warranted just because the primary path changed. If `mockTransport.ts` is ever found to bit-rot (e.g. `types.ts` changes and it isn't updated), that's a reason to revisit, not a reason to have deleted it preemptively here.
+
 ---
 
 ## 10. Non-functional carry-overs (must not regress)
