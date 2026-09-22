@@ -1,16 +1,16 @@
 # Bracket Polling App — Backend/Frontend Split & Frontend Rework Specification
 
-**Status:** Draft specification, not yet implemented.
-**Audience:** A frontend-development agent (human or AI) redesigning the UI, and whoever implements the `backend/` extraction this spec assumes.
+**Status:** Implemented (issues #44-#67; reconciled against the shipped code in issue #68 — see §9 for how every open decision below actually landed).
+**Audience:** A frontend-development agent (human or AI) redesigning the UI, and whoever implements the `backend/` extraction this spec assumes. Now also the reference for how `backend/` (Next.js, `backend/src/app/api/**/route.ts`) and `frontend/` (TanStack Start) actually work, post-split.
 **Companion file:** [`openapi.yaml`](./openapi.yaml) in this same folder — the machine-readable API contract this document describes in prose. The two must be kept in sync; `openapi.yaml` is the source of truth for exact request/response shapes, this document is the source of truth for *why* and for the business rules that don't fit in a schema.
 
-This document reverse-engineers the current single Next.js app (server actions + server-rendered pages) into:
+This document originally reverse-engineered the single pre-split Next.js app (server actions + server-rendered pages) into the plan that issues #44-#67 then executed:
 
 1. A **`backend/`** service: the REST API in `openapi.yaml`, owning Prisma/Postgres, Supabase Storage (service-role), the round-advancement cron job, and all business-rule enforcement.
 2. A **`frontend/`** app: a new UI, free to be redesigned from scratch, that talks to the backend exclusively through a **services layer** (one module per resource area, cataloged in §7) plus Supabase Auth directly (see §6 for why).
 3. A **`docs/`** folder (this file + `openapi.yaml`), the shared contract both sides build against.
 
-Nothing in `src/` has been changed to produce this document — it is pure analysis of the app as it exists today (commit `ee960e0` and earlier), read file-by-file. Where the current implementation has a quirk or an ambiguity that the split forces a decision on, it's called out explicitly in **§9 Decisions & Open Questions** rather than silently resolved.
+That plan has since shipped as described. §1-§8 below are largely unchanged from the original analysis (the business rules and contract they describe are what got built); where the split forced a real decision instead of a mechanical port, it's called out in **§9 Decisions & Open Questions**, which issue #68 updated to record what was actually decided, with the deciding issue number, rather than leaving those as open questions.
 
 ---
 
@@ -349,25 +349,25 @@ Not the frontend agent's concern, but stated for completeness since the split is
 
 ## 9. Decisions & open questions
 
-Flagged explicitly rather than silently resolved — a product/engineering call, not something the frontend agent should decide unilaterally.
+Flagged explicitly rather than silently resolved — a product/engineering call, not something the frontend agent should decide unilaterally. Every subsection below was an open question as of this document's first draft; all seven are now resolved, reconciled against what issues #50-#61 actually shipped (issue #68).
 
-### 9.1 `defaultRoundDurationMinutes` is hardcoded to 60 at creation
+### 9.1 `defaultRoundDurationMinutes` is hardcoded to 60 at creation — Resolved (issue #51): kept as-is
 
-The create-bracket form never asks for a round duration; every new bracket is created with a placeholder `60`-minute default, changed afterward via the round-duration screen on the edit page. This spec preserves that sequencing as-is (`POST /brackets` doesn't accept a duration). If the new frontend wants to collect it up front instead, that's a real product/API change (`CreateBracketRequest` would need a new required or defaulted field) — not assumed here.
+The create-bracket form never asks for a round duration; every new bracket is created with a placeholder `60`-minute default, changed afterward via the round-duration screen on the edit page. **Decision: this spec's original sequencing was kept exactly as proposed.** `POST /brackets` (issue #51, `backend/src/app/api/brackets/route.ts`) does not accept a duration field — `CreateBracketRequest` in `docs/openapi.yaml` has no `defaultRoundDurationMinutes` property, and the route creates every bracket with the same `PLACEHOLDER_DEFAULT_ROUND_DURATION_MINUTES = 60` constant its own top comment names, reusing `validateCreateBracketForm` unmodified from the pre-split Server Action. The "collect it up front instead" alternative this section raised was not taken; still changed afterward via `PATCH /brackets/{id}/round-duration` (issue #53).
 
-### 9.2 Should "preview structure" be a backend endpoint instead of a ported pure function?
+### 9.2 Should "preview structure" be a backend endpoint instead of a ported pure function? — Resolved: ported pure function, per §7.6's recommendation
 
-§7.6 recommends porting `generateFirstRound` to the frontend since it's pure and has no side effects, avoiding a round-trip on every item edit. The alternative — a `GET /brackets/{id}/preview` endpoint that runs the exact same server-side function — guarantees zero drift at the cost of a network round-trip per preview toggle. If the frontend and backend teams are different people/agents who might let the two copies drift, prefer the endpoint. Pick one; don't half-do both.
+**Decision: the ported-function approach was kept, not replaced with an endpoint.** `frontend/src/lib/bracket-logic.ts` (present since the frontend was first imported, issue #44, and unchanged by the backend-split issues) ports `generateFirstRound`/`totalRoundsFor`/`roundLabel` verbatim from `backend/src/lib/bracket/generate-first-round.ts` — that backend file's own top comment says as much: "Deliberately duplicated so the 'preview structure' UI can render without a round-trip. If the rule changes, change both copies." `StructurePreview` in `frontend/src/routes/_authenticated/brackets.$bracketId.edit.tsx` calls it directly against the currently-fetched item list, with no network round-trip. No `GET /brackets/{id}/preview` operation exists in `docs/openapi.yaml` or under `backend/src/app/api/` — issues #51-#58 never added one. The drift risk this section named (two copies of the algorithm) is accepted, not mitigated; if the pairing rule ever changes, both `generate-first-round.ts` and `bracket-logic.ts` need the change, same as before.
 
-### 9.3 Bracket-order / seeding has no explicit column today
+### 9.3 Bracket-order / seeding has no explicit column today — Resolved: kept implicit; `seed` stays unpopulated
 
-Winner pairing for round `N+1` (and the "bracket order" used to render the tree and to determine "which matchup is item X in") is derived by sorting on `BracketItem.createdAt` — there's a `seed` column in the schema but nothing in the current app reads or writes it. This is fragile (relies on insertion order, invisible to the API consumer, and DB-order isn't guaranteed to be stable across arbitrary queries without an explicit `ORDER BY`, which the current code does apply, but only in specific queries). Recommend the backend extraction take this opportunity to populate `seed` explicitly at item-creation time (or a dedicated `position` field) and expose it in the API (`BracketItem.seed`), rather than perpetuating an implicit `createdAt`-order convention into a public REST contract. This is a schema/behavior improvement, not required for parity — flagged for a decision, not made unilaterally here.
+**Decision: the recommended schema/behavior improvement was not taken.** No endpoint issue (#51-#58) populates `BracketItem.seed` at creation — `POST /brackets/{id}/items` (`backend/src/app/api/brackets/[bracketId]/items/route.ts`) never sets it — or reads it for ordering. Every ordering-sensitive path still sorts by `createdAt` ascending exactly as before the split: round 1 generation (`publish/route.ts`'s `orderBy: { createdAt: "asc" }` feeding `buildRoundOnePlan`), later-round pairing (`evaluateRound`'s bracket-order pairing, per §4.5), the tree view (`tree/route.ts`), and `/discover`'s own bracket-level ordering. `seed` remains in `prisma/schema.prisma` and in `docs/openapi.yaml`'s `BracketItem.seed` as a nullable, genuinely-dead column — kept in the wire contract for forward-compatibility, not because anything reads it. This is a deliberate no-change decision, not an oversight; `openapi.yaml`'s `BracketItem.seed` description was updated in issue #68 to say so explicitly instead of the old "before relying on it" hedge.
 
-### 9.4 Scheduled-start timezone handling is currently server-local-time, likely a latent bug
+### 9.4 Scheduled-start timezone handling is currently server-local-time, likely a latent bug — Resolved (issue #53): fixed exactly as recommended
 
-The current `datetime-local` input is parsed with no timezone information at all — "the future" is judged against the *server process's* local clock interpretation of that raw string, not the *voter's browser's* timezone. In a decoupled frontend/backend, this discrepancy becomes far more visible/likely to bite (frontend and backend commonly run in different timezones/regions). **Recommendation:** the new API should require a real timezone-aware ISO-8601 datetime (`scheduledStartAt: "2026-09-25T14:00:00-04:00"` or UTC), with the frontend responsible for converting its local `<input type="datetime-local">` value using the browser's own timezone offset before sending it — this is a genuine behavior fix, not a pure refactor, so call it out to the product owner rather than changing it silently.
+**Decision: the recommended fix was implemented, not carried forward as a bug.** `PATCH /brackets/{id}/schedule` (issue #53, `backend/src/app/api/brackets/[bracketId]/schedule/route.ts`) deliberately does *not* reuse the pre-split Server Action's `parseDatetimeLocalValue` (server-local-time parsing) — the route's own top comment flags this explicitly as "Behavior change, not a pure wrap." It requires a full timezone-aware ISO-8601 `scheduledStartAt`, parsed via `validateScheduleRequest` → `parseIsoDatetimeValue`, which hands the raw string straight to `new Date(...)` with no local-timezone reinterpretation — matching this section's own recommended contract and `docs/openapi.yaml`'s `UpdateScheduleRequest.scheduledStartAt` description ("must be a full timezone-aware ISO-8601 value"). The frontend's `TimingPanel` (`frontend/src/routes/_authenticated/brackets.$bracketId.edit.tsx`) sends `new Date(startAt).toISOString()` — a real UTC instant computed from the browser's own timezone offset — not a naive local string. Flagged to the product owner via the issue #53 grooming/implementation comments, per this section's own instruction, rather than changed silently.
 
-### 9.5 Frontend framework choice is unconstrained
+### 9.5 Frontend framework choice is unconstrained — Resolved (issue #47): TanStack Start (Vite) on Vercel
 
 This spec assumes nothing about what `frontend/` is built with beyond "can call a JSON API, can hold a Supabase session, can set `credentials:'include'` on fetches." Next.js (App Router or Pages), a Vite+React SPA, Remix, etc. are all compatible with this contract. That decision belongs to whoever designs the frontend, not this document.
 
@@ -377,7 +377,7 @@ Why Vercel: it's a deployment-neutral, well-supported target for TanStack Start 
 
 This is the build-target decision only — provisioning the actual Vercel project/domain is out of scope here (see #47's "out of scope").
 
-### 9.6 openapi.yaml ↔ frontend type reconciliation (issue #49)
+### 9.6 openapi.yaml ↔ frontend type reconciliation — Resolved (issue #49; re-verified issue #68)
 
 `frontend/src/services/types.ts` was written against an earlier draft of `openapi.yaml` and had drifted in a few places by the time the frontend was imported (commit `da543c5`). Resolved as follows — `openapi.yaml` is now the exact source of truth again and `types.ts` matches it field-for-field:
 
@@ -386,9 +386,9 @@ This is the build-target decision only — provisioning the actual Vercel projec
 - **`MatchupVotingView.countdownEndsAt`**: `openapi.yaml` didn't mark it nullable; the frontend already typed and handled it as `string | null` (a `PENDING` matchup in an unstarted round has no `endsAt` yet). **Marked nullable in `openapi.yaml`** — the frontend's typing was the accurate one.
 - **`MatchupSummary.itemA`**: not in `openapi.yaml`'s `required` list; the frontend always treats it as present (per §4.6, only `itemB` can be absent, on a bye). **Added to `required` in `openapi.yaml`** — a documentation clarification, not a behavior change.
 
-See §7.4 above for the resulting shapes.
+See §7.4 above for the resulting shapes. Re-checked against the fully-implemented `backend/src/app/api/**/route.ts` in issue #68 (§50-#60 having landed since #49): no further drift found — see `docs/openapi.yaml`'s own updated `info.description` for a summary of the #68 reconciliation pass, and this document's §9.1-9.4 above for the four substantive decisions #49 didn't cover (those were behavior/scope questions, not type-shape drift).
 
-### 9.7 `mockTransport.ts`'s fate once the real backend exists (issue #61)
+### 9.7 `mockTransport.ts`'s fate once the real backend exists — Resolved (issue #61)
 
 `frontend/src/services/transport/mockTransport.ts` was written as a contract stand-in while `backend/` didn't exist yet (§7's services layer talks to `ApiTransport`, an interface `mockTransport.ts` and `httpTransport.ts` both implement). Now that `backend/` implements the full surface (#50-#60) and `frontend/src/services/transport/index.ts` can point at it via `VITE_API_BASE_URL`, `mockTransport.ts` isn't load-bearing for production use anymore.
 

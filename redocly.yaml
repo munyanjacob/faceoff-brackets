@@ -1,0 +1,33 @@
+# Redocly CLI config for `docs/openapi.yaml` (issue #68's
+# `npx @redocly/cli lint docs/openapi.yaml`, run from the repo root, is
+# where this file is auto-discovered from).
+#
+# Two `recommended` rules are turned off here, each for a specific,
+# documented reason — not as a blanket suppression:
+#
+# - `no-server-example.com`: `openapi.yaml`'s `servers[0].url` is a
+#   deliberate placeholder (`https://api.example.com`) pending real hosting.
+#   `frontend-rework-specification.md` §9.5 finalized Vercel as the build
+#   target (issue #47) and the one-parent-domain topology (issue #48), but
+#   the actual production domain hasn't been provisioned yet — see #47's own
+#   "out of scope." The same placeholder pattern is used, with the same
+#   reasoning, in `backend/src/lib/api/cors.ts`'s `DEFAULT_ALLOWED_ORIGIN`
+#   and `backend/src/app/api/matchups/[matchupId]/votes/route.ts`'s
+#   `DEFAULT_VOTER_COOKIE_DOMAIN`. Swap all three out together once a real
+#   domain exists — don't silence this rule for any other reason.
+# - `operation-4xx-response`: `GET /discover` (docs/openapi.yaml) takes no
+#   parameters, requires no auth, and has no ownership/state checks — see
+#   `backend/src/app/api/discover/route.ts`, which has no error branch at
+#   all beyond the universal generic-500 fallback (`info.description`
+#   covers that). There's no genuine 4xx case to document for this one
+#   operation.
+# - `info-license-strict`: `info.license.name` is `UNLICENSED` (this repo
+#   isn't published under an open-source license — see `backend/package.json`
+#   and `frontend/package.json`'s own `"private": true`), so there's no
+#   license URL to point `info.license.url` at.
+extends:
+  - recommended
+rules:
+  no-server-example.com: off
+  operation-4xx-response: off
+  info-license-strict: off
