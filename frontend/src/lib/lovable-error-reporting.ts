@@ -1,3 +1,9 @@
+// Kept (issue #66): has a real call site - `src/routes/__root.tsx`'s root
+// `errorComponent` calls `reportLovableError` for every uncaught route error.
+// The `window.__lovableEvents`/`__lovableReportRuntimeError` hooks it posts to
+// are only defined inside Lovable's editor preview, so this is a harmless
+// no-op in production, but removing it means editing the root error boundary
+// in `__root.tsx`, which is outside this issue's scope.
 type LovableErrorOptions = {
   mechanism?: "manual" | "onerror" | "unhandledrejection" | "react_error_boundary";
   handled?: boolean;
