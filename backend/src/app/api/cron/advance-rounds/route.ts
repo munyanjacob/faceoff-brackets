@@ -1,3 +1,4 @@
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { findExpiredRounds } from "@/lib/rounds/find-expired-rounds";
 import { evaluateRound } from "@/lib/rounds/evaluate-round";
@@ -5,12 +6,18 @@ import { findExpiredTieBreakers } from "@/lib/rounds/find-expired-tie-breakers";
 import { resolveTieBreaker } from "@/lib/rounds/resolve-tie-breaker";
 import { findDueScheduledBrackets } from "@/lib/rounds/find-due-scheduled-brackets";
 import { startScheduledBracket } from "@/lib/rounds/start-scheduled-bracket";
+import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { preflightResponse, withCors } from "@/lib/api/cors";
 
 // GET /api/cron/advance-rounds
 //
 // Invoked on a schedule by Vercel Cron (see vercel.json), which always
 // calls scheduled routes with GET. Authenticates the caller against the
-// CRON_SECRET environment variable via a bearer token (#9).
+// CRON_SECRET environment variable via a bearer token (#9) - a static
+// shared secret (docs/openapi.yaml's `cronSecret` security scheme), not a
+// user-identity token, so unlike the creator-only endpoints this doesn't
+// go through `@/lib/api/auth`'s Supabase-backed
+// `getAuthenticatedUserId`/`unauthorizedResponse`.
 //
 // Three independent steps run on every authenticated invocation:
 //
@@ -52,76 +59,95 @@ import { startScheduledBracket } from "@/lib/rounds/start-scheduled-bracket";
 // throwing (a data anomaly, a transient DB error, etc.) is logged and
 // skipped rather than aborting the rest of the batch, so a single bad
 // Round/Bracket/Matchup can never block every other one from advancing.
-// Nothing due in any step is a safe no-op that still returns 200.
-export async function GET(request: Request) {
-  const cronSecret = process.env.CRON_SECRET;
-  const authHeader = request.headers.get("authorization");
+// `runBatch` below is the one place that "for-await + try/catch + count"
+// shape lives, shared by all three steps. Nothing due in any step is a
+// safe no-op that still returns 200.
 
-  if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const expiredRounds = await findExpiredRounds(prisma);
-
-  let evaluated = 0;
+/**
+ * Runs `fn` once per item in `items`, catching (rather than propagating)
+ * any individual failure so one bad item never blocks the rest of the
+ * batch - see the module doc comment above. Each failure is logged with
+ * `label` and the failing item's id, e.g. `"evaluate round"` ->
+ * `"failed to evaluate round <id>:"`.
+ *
+ * Returns how many items were in the batch and how many of those
+ * succeeded vs. failed - `count` is always `succeeded + failed`.
+ */
+async function runBatch<T extends { id: string }>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+  label: string
+): Promise<{ count: number; succeeded: number; failed: number }> {
+  let succeeded = 0;
   let failed = 0;
-  for (const round of expiredRounds) {
+
+  for (const item of items) {
     try {
-      await evaluateRound(round.id);
-      evaluated++;
+      await fn(item);
+      succeeded++;
     } catch (error) {
       failed++;
       console.error(
-        `[cron/advance-rounds] failed to evaluate round ${round.id}:`,
+        `[cron/advance-rounds] failed to ${label} ${item.id}:`,
         error
       );
     }
   }
 
-  const expiredTieBreakers = await findExpiredTieBreakers(prisma);
+  return { count: items.length, succeeded, failed };
+}
 
-  let tieBreakersResolved = 0;
-  let tieBreakersFailed = 0;
-  for (const matchup of expiredTieBreakers) {
-    try {
-      await resolveTieBreaker(matchup.id);
-      tieBreakersResolved++;
-    } catch (error) {
-      tieBreakersFailed++;
-      console.error(
-        `[cron/advance-rounds] failed to resolve tie-breaker for matchup ${matchup.id}:`,
-        error
+export const GET = async (request: Request): Promise<Response> => {
+  const response = await withErrorHandling(async () => {
+    const cronSecret = process.env.CRON_SECRET;
+    const authHeader = request.headers.get("authorization");
+
+    if (!cronSecret || authHeader !== `Bearer ${cronSecret}`) {
+      return errorResponse(
+        401,
+        "UNAUTHORIZED",
+        "Missing or incorrect bearer secret."
       );
     }
-  }
 
-  const dueScheduledBrackets = await findDueScheduledBrackets(prisma);
+    const expiredRounds = await findExpiredRounds(prisma);
+    const rounds = await runBatch(
+      expiredRounds,
+      (round) => evaluateRound(round.id),
+      "evaluate round"
+    );
 
-  let bracketsStarted = 0;
-  let bracketsStartFailed = 0;
-  for (const bracket of dueScheduledBrackets) {
-    try {
-      await startScheduledBracket(bracket.id);
-      bracketsStarted++;
-    } catch (error) {
-      bracketsStartFailed++;
-      console.error(
-        `[cron/advance-rounds] failed to start scheduled bracket ${bracket.id}:`,
-        error
-      );
-    }
-  }
+    const expiredTieBreakers = await findExpiredTieBreakers(prisma);
+    const tieBreakers = await runBatch(
+      expiredTieBreakers,
+      (matchup) => resolveTieBreaker(matchup.id),
+      "resolve tie-breaker for matchup"
+    );
 
-  return Response.json({
-    ok: true,
-    expired: expiredRounds.length,
-    evaluated,
-    failed,
-    expiredTieBreakers: expiredTieBreakers.length,
-    tieBreakersResolved,
-    tieBreakersFailed,
-    dueScheduledBrackets: dueScheduledBrackets.length,
-    bracketsStarted,
-    bracketsStartFailed,
-  });
+    const dueScheduledBrackets = await findDueScheduledBrackets(prisma);
+    const brackets = await runBatch(
+      dueScheduledBrackets,
+      (bracket) => startScheduledBracket(bracket.id),
+      "start scheduled bracket"
+    );
+
+    return NextResponse.json({
+      ok: true,
+      expired: rounds.count,
+      evaluated: rounds.succeeded,
+      failed: rounds.failed,
+      expiredTieBreakers: tieBreakers.count,
+      tieBreakersResolved: tieBreakers.succeeded,
+      tieBreakersFailed: tieBreakers.failed,
+      dueScheduledBrackets: brackets.count,
+      bracketsStarted: brackets.succeeded,
+      bracketsStartFailed: brackets.failed,
+    });
+  })();
+
+  return withCors(request, response);
+};
+
+export function OPTIONS(request: Request): Response {
+  return preflightResponse(request);
 }
