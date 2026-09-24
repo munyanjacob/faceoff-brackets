@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { createClient } from "@supabase/supabase-js";
+import { createSupabaseServiceRoleClient } from "@/lib/supabase/env";
 
 /**
  * Uploads a validated `BracketItem` image (issue #12, `./validation.ts`) to
@@ -7,8 +7,10 @@ import { createClient } from "@supabase/supabase-js";
  * onto `BracketItem.image_url`.
  *
  * Deliberately builds its own `@supabase/supabase-js` client with the
- * service-role key, rather than using `@/lib/supabase/server`'s
- * request-scoped (anon-key + user-session) client:
+ * service-role key (via `@/lib/supabase/env`'s
+ * `createSupabaseServiceRoleClient()`), rather than using
+ * `@/lib/supabase/server`'s request-scoped (anon-key + user-session)
+ * client:
  *
  * - `./actions.ts` has already re-derived the signed-in creator and
  *   confirmed they own `bracketId`'s (draft) bracket - see
@@ -37,13 +39,6 @@ const FILE_EXTENSIONS_BY_MIME_TYPE: Record<string, string> = {
   "image/webp": "webp",
 };
 
-function createStorageClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-}
-
 export async function uploadBracketItemImage(
   bracketId: string,
   file: File
@@ -56,7 +51,7 @@ export async function uploadBracketItemImage(
   // orphaned, which the issue explicitly marks out of scope to clean up.
   const path = `${bracketId}/${randomUUID()}.${extension}`;
 
-  const supabase = createStorageClient();
+  const supabase = createSupabaseServiceRoleClient();
   const { error: uploadError } = await supabase.storage
     .from(BUCKET_NAME)
     .upload(path, file, { contentType: file.type });

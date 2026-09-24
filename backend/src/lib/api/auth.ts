@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createSupabaseAnonClient } from "@/lib/supabase/env";
 
 // Bearer-token auth verification for the new REST API surface (issue #50,
 // docs/openapi.yaml, docs/frontend-rework-specification.md §6).
@@ -12,19 +12,14 @@ import { createClient } from "@supabase/supabase-js";
 // `@/lib/supabase/server`'s cookie-bound client (which reads a session via
 // `next/headers`) isn't the right tool here: there's no cookie session to
 // read, just a caller-supplied token to check. Instead this builds its own
-// minimal `@supabase/supabase-js` client the same way
-// `src/app/dashboard/brackets/[id]/edit/image-upload.ts` does for Storage
-// uploads - except with the **anon** key, never
-// `SUPABASE_SERVICE_ROLE_KEY`. `supabase.auth.getUser(token)` verifies the
-// caller-supplied token directly against Supabase's API; the anon key is
-// sufficient for that and doesn't grant this client any elevated access.
-
-function createAuthClient() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
-}
+// minimal `@supabase/supabase-js` client via `@/lib/supabase/env`'s
+// `createSupabaseAnonClient()` - the same factory
+// `src/app/dashboard/brackets/[id]/edit/image-upload.ts` uses (with the
+// service-role variant) for Storage uploads - except with the **anon**
+// key, never `SUPABASE_SERVICE_ROLE_KEY`. `supabase.auth.getUser(token)`
+// verifies the caller-supplied token directly against Supabase's API; the
+// anon key is sufficient for that and doesn't grant this client any
+// elevated access.
 
 const BEARER_PREFIX = /^Bearer\s+(.+)$/i;
 
@@ -53,7 +48,7 @@ export async function getAuthenticatedUserId(
   const token = extractBearerToken(request);
   if (!token) return null;
 
-  const supabase = createAuthClient();
+  const supabase = createSupabaseAnonClient();
   const { data, error } = await supabase.auth.getUser(token);
 
   if (error || !data.user) return null;
