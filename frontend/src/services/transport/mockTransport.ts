@@ -10,10 +10,14 @@
  *
  * Nothing outside src/services imports this file. Point VITE_API_BASE_URL at
  * the real API and it is bypassed entirely.
+ *
+ * This is the composition root: mockDb.ts owns the schema + persistence,
+ * mockSeed.ts owns demo data, mockEngine.ts owns the tournament business
+ * rules, and this file wires them into the ApiTransport CRUD surface.
  */
 
 import { ServiceError, GENERIC_ERROR_MESSAGE } from "../serviceError";
-import { generateFirstRound, roundLabel, totalRoundsFor } from "@/lib/bracket-logic";
+import { roundLabel, totalRoundsFor } from "@/lib/bracket-logic";
 import type { ApiTransport, CallerResolver } from "./types";
 import type {
   Bracket,
@@ -29,260 +33,39 @@ import type {
   DiscoverRow,
   MatchupCell,
   MatchupResult,
-  MatchupStatus,
   MatchupSummary,
   MatchupVotingView,
-  RoundStatus,
   UpdateRoundDurationRequest,
   UpdateScheduleRequest,
   UpsertItemInput,
   VotableMatchupsResponse,
 } from "../types";
+import {
+  anonymousId,
+  itemsOf,
+  load,
+  nowIso,
+  save,
+  uid,
+  type Db,
+  type MatchupRow,
+  type VoteRow,
+} from "./mockDb";
+import { createRound, sweep, tallies } from "./mockEngine";
 
-interface RoundRow {
-  id: string;
-  bracketId: string;
-  roundNumber: number;
-  durationMinutes: number;
-  startsAt: string | null;
-  endsAt: string | null;
-  status: RoundStatus;
-}
+/** Vote rate limit (§4.7-ish anti-abuse rule): votes per caller within the window. */
+const VOTE_RATE_LIMIT = 20;
+const VOTE_RATE_WINDOW_MS = 10 * 60_000;
 
-interface MatchupRow {
-  id: string;
-  roundId: string;
-  position: number;
-  itemAId: string | null;
-  itemBId: string | null;
-  winnerItemId: string | null;
-  status: MatchupStatus;
-  tieBreakerEndsAt: string | null;
-}
+/** Max length of a vote's free-text comment. */
+const MAX_COMMENT_LENGTH = 500;
 
-interface VoteRow {
-  id: string;
-  matchupId: string;
-  itemId: string;
-  userId: string | null;
-  anonymousVoterIdentifier: string | null;
-  comment: string | null;
-  phase: "ORIGINAL" | "TIE_BREAKER";
-  createdAt: string;
-}
-
-interface Db {
-  brackets: Bracket[];
-  items: BracketItem[];
-  rounds: RoundRow[];
-  matchups: MatchupRow[];
-  votes: VoteRow[];
-  profiles: Record<string, string | null>;
-}
-
-const DB_KEY = "bracket-arena-db-v1";
-const ANON_KEY = "bracket-arena-voter-id";
-
-const uid = () =>
-  typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : Math.random().toString(36).slice(2) + Date.now().toString(36);
-
-const nowIso = () => new Date().toISOString();
-const plusMinutes = (from: Date, minutes: number) =>
-  new Date(from.getTime() + minutes * 60_000).toISOString();
-
-function emptyDb(): Db {
-  return { brackets: [], items: [], rounds: [], matchups: [], votes: [], profiles: {} };
-}
-
-let cache: Db | null = null;
-
-function load(): Db {
-  if (cache) return cache;
-  if (typeof window === "undefined") {
-    cache = emptyDb();
-    return cache;
-  }
-  const raw = window.localStorage.getItem(DB_KEY);
-  if (raw) {
-    try {
-      cache = JSON.parse(raw) as Db;
-      return cache;
-    } catch {
-      /* fall through to a fresh seed */
-    }
-  }
-  cache = seed();
-  save();
-  return cache;
-}
-
-function save() {
-  if (typeof window === "undefined" || !cache) return;
-  window.localStorage.setItem(DB_KEY, JSON.stringify(cache));
-}
+/** Item image upload constraints. */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"];
 
 function fail(code: string, message: string, status: number): never {
   throw new ServiceError(code, message, status);
-}
-
-function anonymousId(): string {
-  if (typeof window === "undefined") return "ssr";
-  let id = window.localStorage.getItem(ANON_KEY);
-  if (!id) {
-    id = uid();
-    window.localStorage.setItem(ANON_KEY, id);
-  }
-  return id;
-}
-
-/* ------------------------------------------------------------------ *
- * Engine — shared by seeding, the sweep, and the request handlers.
- * ------------------------------------------------------------------ */
-
-function durationForRound(bracket: Bracket, roundNumber: number): number {
-  const override = bracket.roundDurationOverrides[String(roundNumber)];
-  return override && override > 0 ? override : bracket.defaultRoundDurationMinutes;
-}
-
-function itemsOf(db: Db, bracketId: string): BracketItem[] {
-  return db.items
-    .filter((i) => i.bracketId === bracketId)
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-}
-
-function createRound(
-  db: Db,
-  bracket: Bracket,
-  roundNumber: number,
-  orderedItems: BracketItem[],
-  opts: { pending: boolean; startsAt: Date | null },
-): RoundRow {
-  const minutes = durationForRound(bracket, roundNumber);
-  const start = opts.startsAt;
-  const round: RoundRow = {
-    id: uid(),
-    bracketId: bracket.id,
-    roundNumber,
-    durationMinutes: minutes,
-    startsAt: start ? start.toISOString() : null,
-    endsAt: start ? plusMinutes(start, minutes) : null,
-    status: opts.pending ? "PENDING" : "ACTIVE",
-  };
-  db.rounds.push(round);
-
-  generateFirstRound(orderedItems).forEach((pair, index) => {
-    const isBye = pair.b === null;
-    db.matchups.push({
-      id: uid(),
-      roundId: round.id,
-      position: index,
-      itemAId: pair.a.id,
-      itemBId: pair.b ? pair.b.id : null,
-      winnerItemId: isBye ? pair.a.id : null,
-      status: isBye ? "COMPLETED" : opts.pending ? "PENDING" : "ACTIVE",
-      tieBreakerEndsAt: null,
-    });
-  });
-  return round;
-}
-
-function tallies(db: Db, matchupId: string, phase?: "ORIGINAL" | "TIE_BREAKER") {
-  const counts: Record<string, number> = {};
-  for (const vote of db.votes) {
-    if (vote.matchupId !== matchupId) continue;
-    if (phase && vote.phase !== phase) continue;
-    counts[vote.itemId] = (counts[vote.itemId] ?? 0) + 1;
-  }
-  return counts;
-}
-
-function closeRoundIfDone(db: Db, round: RoundRow) {
-  const matchups = db.matchups.filter((m) => m.roundId === round.id);
-  if (matchups.some((m) => m.status !== "COMPLETED")) return;
-
-  round.status = "COMPLETED";
-  const bracket = db.brackets.find((b) => b.id === round.bracketId);
-  if (!bracket) return;
-
-  const winners = matchups
-    .sort((a, b) => a.position - b.position)
-    .map((m) => db.items.find((i) => i.id === m.winnerItemId))
-    .filter((i): i is BracketItem => Boolean(i));
-
-  if (winners.length <= 1) {
-    bracket.status = "COMPLETED";
-    return;
-  }
-  createRound(db, bracket, round.roundNumber + 1, winners, {
-    pending: false,
-    startsAt: new Date(),
-  });
-}
-
-function resolveTieBreaker(db: Db, matchup: MatchupRow) {
-  const counts = tallies(db, matchup.id, "TIE_BREAKER");
-  const a = matchup.itemAId!;
-  const b = matchup.itemBId!;
-  const aCount = counts[a] ?? 0;
-  const bCount = counts[b] ?? 0;
-  matchup.winnerItemId =
-    aCount === bCount ? (Math.random() < 0.5 ? a : b) : aCount > bCount ? a : b;
-  matchup.status = "COMPLETED";
-}
-
-/** The round-advancement job (§4.5): three independent, idempotent sweeps. */
-function sweep(db: Db) {
-  const now = Date.now();
-
-  // 1. Expired active rounds.
-  for (const round of db.rounds) {
-    if (round.status !== "ACTIVE" || !round.endsAt || Date.parse(round.endsAt) > now) continue;
-    for (const matchup of db.matchups.filter((m) => m.roundId === round.id)) {
-      if (matchup.status !== "ACTIVE") continue;
-      const counts = tallies(db, matchup.id);
-      const a = matchup.itemAId!;
-      const b = matchup.itemBId!;
-      const aCount = counts[a] ?? 0;
-      const bCount = counts[b] ?? 0;
-      if (aCount === bCount) {
-        matchup.status = "TIE_BREAKER";
-        matchup.tieBreakerEndsAt = new Date(
-          now + Math.max(round.durationMinutes * 60_000 * 0.25, 3_600_000),
-        ).toISOString();
-      } else {
-        matchup.status = "COMPLETED";
-        matchup.winnerItemId = aCount > bCount ? a : b;
-      }
-    }
-    closeRoundIfDone(db, round);
-  }
-
-  // 2. Expired tie-breakers.
-  for (const matchup of db.matchups) {
-    if (matchup.status !== "TIE_BREAKER") continue;
-    if (!matchup.tieBreakerEndsAt || Date.parse(matchup.tieBreakerEndsAt) > now) continue;
-    resolveTieBreaker(db, matchup);
-    const round = db.rounds.find((r) => r.id === matchup.roundId);
-    if (round && round.status === "ACTIVE") closeRoundIfDone(db, round);
-  }
-
-  // 3. Due scheduled brackets.
-  for (const bracket of db.brackets) {
-    if (bracket.status !== "SCHEDULED") continue;
-    if (!bracket.scheduledStartAt || Date.parse(bracket.scheduledStartAt) > now) continue;
-    bracket.status = "ACTIVE";
-    const first = db.rounds.find((r) => r.bracketId === bracket.id && r.roundNumber === 1);
-    if (first) {
-      first.status = "ACTIVE";
-      first.startsAt = new Date(now).toISOString();
-      first.endsAt = plusMinutes(new Date(now), first.durationMinutes);
-      for (const matchup of db.matchups.filter((m) => m.roundId === first.id)) {
-        if (matchup.status === "PENDING") matchup.status = "ACTIVE";
-      }
-    }
-  }
 }
 
 function withSweep<T>(fn: (db: Db) => T): T {
@@ -291,145 +74,6 @@ function withSweep<T>(fn: (db: Db) => T): T {
   const result = fn(db);
   save();
   return result;
-}
-
-/* ------------------------------------------------------------------ *
- * Seed data — a few public brackets so the app is never empty.
- * ------------------------------------------------------------------ */
-
-function seedBracket(
-  db: Db,
-  creatorId: string,
-  title: string,
-  description: string,
-  itemTitles: string[],
-  durationMinutes: number,
-): Bracket {
-  const created = new Date(Date.now() - 1000 * 60 * 60 * 24 * 3);
-  const bracket: Bracket = {
-    id: uid(),
-    creatorId,
-    title,
-    description,
-    visibility: "PUBLIC",
-    votingRequirement: "ANONYMOUS_ALLOWED",
-    defaultRoundDurationMinutes: durationMinutes,
-    roundDurationOverrides: {},
-    scheduledStartAt: null,
-    status: "ACTIVE",
-    createdAt: created.toISOString(),
-    publishedAt: created.toISOString(),
-  };
-  db.brackets.push(bracket);
-  itemTitles.forEach((t, index) => {
-    db.items.push({
-      id: uid(),
-      bracketId: bracket.id,
-      title: t,
-      description: null,
-      imageUrl: null,
-      seed: index + 1,
-      createdAt: new Date(created.getTime() + index * 1000).toISOString(),
-    });
-  });
-  createRound(db, bracket, 1, itemsOf(db, bracket.id), { pending: false, startsAt: new Date() });
-  return bracket;
-}
-
-/** Fake out real voting so seeded brackets have history. */
-function simulateRounds(db: Db, bracket: Bracket, roundsToPlay: number) {
-  for (let played = 0; played < roundsToPlay; played++) {
-    const round = db.rounds
-      .filter((r) => r.bracketId === bracket.id && r.status === "ACTIVE")
-      .sort((a, b) => b.roundNumber - a.roundNumber)[0];
-    if (!round) return;
-    for (const matchup of db.matchups.filter((m) => m.roundId === round.id)) {
-      if (matchup.status !== "ACTIVE" || !matchup.itemBId) continue;
-      const aVotes = 3 + Math.floor(Math.random() * 20);
-      const bVotes = 3 + Math.floor(Math.random() * 20);
-      const push = (itemId: string, count: number) => {
-        for (let i = 0; i < count; i++) {
-          db.votes.push({
-            id: uid(),
-            matchupId: matchup.id,
-            itemId,
-            userId: null,
-            anonymousVoterIdentifier: uid(),
-            comment: i === 0 ? "Easy call for me." : null,
-            phase: "ORIGINAL",
-            createdAt: nowIso(),
-          });
-        }
-      };
-      push(matchup.itemAId!, aVotes);
-      push(matchup.itemBId, bVotes === aVotes ? bVotes + 1 : bVotes);
-    }
-    round.endsAt = new Date(Date.now() - 60_000).toISOString();
-    sweep(db);
-  }
-}
-
-function seed(): Db {
-  const db = emptyDb();
-  const creatorId = "seed-creator";
-  db.profiles[creatorId] = "Arena Staff";
-
-  const snacks = seedBracket(
-    db,
-    creatorId,
-    "Greatest Road-Trip Snack",
-    "Sixteen gas-station legends. One champion. Vote in every round.",
-    [
-      "Beef Jerky",
-      "Sour Gummy Worms",
-      "Salted Peanuts",
-      "Kettle Chips",
-      "Trail Mix",
-      "Cheese Crackers",
-      "Chocolate Bar",
-      "Pretzel Bites",
-      "Corn Nuts",
-      "Fruit Snacks",
-      "Sunflower Seeds",
-      "Powdered Donuts",
-      "Energy Drink",
-      "String Cheese",
-      "Popcorn",
-      "Slim Jim",
-    ],
-    720,
-  );
-  simulateRounds(db, snacks, 2);
-
-  const movies = seedBracket(
-    db,
-    creatorId,
-    "Best Sports Movie Ever",
-    "Eight contenders, single elimination, no mercy.",
-    [
-      "Hoosiers",
-      "Rocky",
-      "Remember the Titans",
-      "Miracle",
-      "The Sandlot",
-      "Rudy",
-      "Moneyball",
-      "Cool Runnings",
-    ],
-    480,
-  );
-  simulateRounds(db, movies, 3);
-
-  seedBracket(
-    db,
-    creatorId,
-    "Ultimate Pizza Topping",
-    "Voting is live right now — pick a side.",
-    ["Pepperoni", "Mushroom", "Pineapple", "Sausage", "Basil", "Olives"],
-    360,
-  );
-
-  return db;
 }
 
 /* ------------------------------------------------------------------ *
@@ -499,10 +143,10 @@ function validateItemInput(input: UpsertItemInput) {
   if (!input.title.trim()) fail("VALIDATION_ERROR", "Title is required.", 400);
   const image = input.image;
   if (image && image.size > 0) {
-    if (!["image/png", "image/jpeg", "image/webp"].includes(image.type)) {
+    if (!ALLOWED_IMAGE_TYPES.includes(image.type)) {
       fail("VALIDATION_ERROR", "Image must be a PNG, JPEG, or WebP file.", 400);
     }
-    if (image.size > 5 * 1024 * 1024) {
+    if (image.size > MAX_IMAGE_BYTES) {
       fail("VALIDATION_ERROR", "Image must be 5MB or smaller.", 400);
     }
   }
@@ -648,7 +292,8 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
       return withSweep((db) => {
         const bracket = ownedDraft(db, bracketId, caller.userId);
         const value = input.defaultRoundDurationMinutes;
-        if (!value && value !== 0) fail("VALIDATION_ERROR", "Default round duration is required.", 400);
+        if (!value && value !== 0)
+          fail("VALIDATION_ERROR", "Default round duration is required.", 400);
         if (!Number.isInteger(value) || value <= 0) {
           fail(
             "VALIDATION_ERROR",
@@ -743,7 +388,10 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
           };
         }
         if (bracket.status === "COMPLETED") {
-          return { kind: "message" as const, message: "This bracket has finished. Voting is closed." };
+          return {
+            kind: "message" as const,
+            message: "This bracket has finished. Voting is closed.",
+          };
         }
         const roundIds = db.rounds
           .filter((r) => r.bracketId === bracketId && r.status === "ACTIVE")
@@ -751,8 +399,7 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
         const matchups = db.matchups
           .filter(
             (m) =>
-              roundIds.includes(m.roundId) &&
-              (m.status === "ACTIVE" || m.status === "TIE_BREAKER"),
+              roundIds.includes(m.roundId) && (m.status === "ACTIVE" || m.status === "TIE_BREAKER"),
           )
           .sort((a, b) => a.position - b.position)
           .map((m) => toSummary(db, m));
@@ -834,9 +481,9 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
         if (existing) return { votedItemId: existing.itemId, alreadyVoted: true };
 
         const recent = db.votes.filter(
-          (v) => matches(v) && Date.now() - Date.parse(v.createdAt) < 10 * 60_000,
+          (v) => matches(v) && Date.now() - Date.parse(v.createdAt) < VOTE_RATE_WINDOW_MS,
         );
-        if (recent.length >= 20) {
+        if (recent.length >= VOTE_RATE_LIMIT) {
           fail(
             "RATE_LIMITED",
             "You've cast a lot of votes very quickly - please wait a few minutes and try again.",
@@ -845,7 +492,7 @@ export function createMockTransport(getCaller: CallerResolver): ApiTransport {
         }
 
         const comment = input.comment?.trim() ?? "";
-        if (comment.length > 500) {
+        if (comment.length > MAX_COMMENT_LENGTH) {
           fail("COMMENT_TOO_LONG", "Comments can be at most 500 characters.", 400);
         }
 
