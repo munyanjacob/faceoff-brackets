@@ -5,17 +5,14 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Countdown } from "@/components/countdown";
 import { votingService, toServiceError, type BracketItem } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/brackets/$bracketId/matchups/$matchupId/")({
   head: () => ({
-    meta: [
-      { title: "Cast your vote — Bracket Arena" },
-      { name: "description", content: "Pick your side in this head-to-head matchup." },
-      { property: "og:title", content: "Cast your vote — Bracket Arena" },
-      { property: "og:description", content: "Pick your side in this head-to-head matchup." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Cast your vote — Bracket Arena",
+      description: "Pick your side in this head-to-head matchup.",
+    }),
   }),
   component: VotePage,
 });

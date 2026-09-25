@@ -5,17 +5,15 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSession } from "@/hooks/useSession";
 import { authService, toServiceError } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
-    meta: [
-      { title: "Sign in — Bracket Arena" },
-      { name: "description", content: "Sign in or create an account to build voting brackets." },
-      { property: "og:title", content: "Sign in — Bracket Arena" },
-      { property: "og:description", content: "Sign in or create an account to build brackets." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Sign in — Bracket Arena",
+      description: "Sign in or create an account to build voting brackets.",
+      ogDescription: "Sign in or create an account to build brackets.",
+    }),
   }),
   component: AuthPage,
 });

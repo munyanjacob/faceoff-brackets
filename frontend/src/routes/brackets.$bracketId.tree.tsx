@@ -3,23 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { resultsService, type MatchupCell } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/brackets/$bracketId/tree")({
   head: () => ({
-    meta: [
-      { title: "Bracket tree — Bracket Arena" },
-      {
-        name: "description",
-        content: "Every round of the tournament, from the opening matchups to the champion.",
-      },
-      { property: "og:title", content: "Bracket tree — Bracket Arena" },
-      {
-        property: "og:description",
-        content: "Every round of the tournament, from the opening matchups to the champion.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Bracket tree — Bracket Arena",
+      description: "Every round of the tournament, from the opening matchups to the champion.",
+    }),
   }),
   component: TreePage,
 });

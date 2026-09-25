@@ -6,17 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { bracketService, toServiceError, type Visibility, type VotingRequirement } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/_authenticated/brackets/new")({
   head: () => ({
-    meta: [
-      { title: "New bracket — Bracket Arena" },
-      { name: "description", content: "Start a new head-to-head voting bracket." },
-      { property: "og:title", content: "New bracket — Bracket Arena" },
-      { property: "og:description", content: "Start a new head-to-head voting bracket." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "New bracket — Bracket Arena",
+      description: "Start a new head-to-head voting bracket.",
+    }),
   }),
   component: NewBracket,
 });
