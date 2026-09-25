@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { bracketService, type BracketStatus, type BracketWithRounds } from "@/services";
 import { pageMeta } from "@/lib/pageMeta";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
@@ -53,7 +54,7 @@ function Row({ bracket }: { bracket: BracketWithRounds }) {
 
 function Dashboard() {
   const { data, isLoading } = useQuery({
-    queryKey: ["my-brackets"],
+    queryKey: queryKeys.myBrackets(),
     queryFn: () => bracketService.listMine(),
   });
 

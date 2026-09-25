@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { discoveryService } from "@/services";
 import { pageMeta } from "@/lib/pageMeta";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -20,7 +21,7 @@ export const Route = createFileRoute("/")({
 
 function Landing() {
   const { data } = useQuery({
-    queryKey: ["discover"],
+    queryKey: queryKeys.discover(),
     queryFn: () => discoveryService.listPublic(),
   });
   const live = data?.active.slice(0, 3) ?? [];

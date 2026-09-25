@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { resultsService, type BracketItem } from "@/services";
 import { pageMeta } from "@/lib/pageMeta";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/brackets/$bracketId/matchups/$matchupId/result")({
   head: () => ({
@@ -44,7 +45,7 @@ function Card({
 function ResultPage() {
   const { bracketId, matchupId } = Route.useParams();
   const { data, isLoading } = useQuery({
-    queryKey: ["matchup-result", bracketId, matchupId],
+    queryKey: queryKeys.matchupResult(bracketId, matchupId),
     queryFn: () => resultsService.getMatchupResult(bracketId, matchupId),
   });
 

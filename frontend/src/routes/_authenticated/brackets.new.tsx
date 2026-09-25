@@ -5,8 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { bracketService, toServiceError, type Visibility, type VotingRequirement } from "@/services";
+import { bracketService, type Visibility, type VotingRequirement } from "@/services";
 import { pageMeta } from "@/lib/pageMeta";
+import { queryKeys } from "@/lib/queryKeys";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 export const Route = createFileRoute("/_authenticated/brackets/new")({
   head: () => ({
@@ -49,29 +51,22 @@ function NewBracket() {
   const [visibility, setVisibility] = useState<Visibility>("PUBLIC");
   const [votingRequirement, setVotingRequirement] =
     useState<VotingRequirement>("ANONYMOUS_ALLOWED");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const { busy, error, run } = useAsyncAction();
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    setError(null);
-    setBusy(true);
-    try {
+    await run(async () => {
       const bracket = await bracketService.create({
         title,
         description: description || undefined,
         visibility,
         votingRequirement,
       });
-      await queryClient.invalidateQueries({ queryKey: ["my-brackets"] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.myBrackets() });
       navigate({ to: "/brackets/$bracketId/edit", params: { bracketId: bracket.id } });
-    } catch (caught) {
-      setError(toServiceError(caught).message);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   return (
