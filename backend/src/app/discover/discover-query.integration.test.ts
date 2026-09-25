@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+// `connection()` needs a real request scope, which calling the page
+// directly doesn't provide.
+vi.mock("next/server", () => ({ connection: vi.fn(async () => {}) }));
 
 // Exercises issue #34's actual query end-to-end against the real,
 // disposable Supabase/Postgres project configured in `.env.local`: seeds

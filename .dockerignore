@@ -1,0 +1,13 @@
+.git
+**/node_modules
+**/.next
+**/.output
+**/.vercel
+**/.nitro
+**/.tanstack
+backend/src/generated
+
+# Local env overrides can hold real secrets (e.g. backend/.env.local's
+# service-role key) - pass them at `docker run` time instead.
+**/.env.local
+**/.env.*.local
