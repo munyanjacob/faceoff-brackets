@@ -1,8 +1,15 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
+import {
+  requireOwnedBracket,
+  type OwnedBracket,
+} from "@/lib/api/require-owned-bracket";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import {
+  ITEM_NOT_FOUND_MESSAGE,
+  NOT_DRAFT_ITEMS_MESSAGE,
+} from "@/lib/api/messages";
 import { validateBracketItemForm } from "@/app/dashboard/brackets/[id]/edit/validation";
 import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image-upload";
 
@@ -26,10 +33,11 @@ import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image
 // `Error` body (`@/lib/api/errors`) instead of `{ error }` / `notFound()`.
 //
 // Order of checks mirrors `updateItem`/`removeItem` exactly: auth (401) ->
-// bracket ownership (404, indistinguishable from not-found per spec §4.9)
-// -> DRAFT status (409, `NOT_DRAFT`) -> item lookup scoped to bracketId
-// (404) -> (PATCH only) form validation (400) -> (PATCH only) image upload,
-// if any (502, `IMAGE_UPLOAD_FAILED`) -> mutate.
+// bracket ownership (404, indistinguishable from not-found per spec §4.9,
+// via the shared `requireOwnedBracket` - issue #72) -> DRAFT status (409,
+// `NOT_DRAFT`) -> item lookup scoped to bracketId (404) -> (PATCH only) form
+// validation (400) -> (PATCH only) image upload, if any (502,
+// `IMAGE_UPLOAD_FAILED`) -> mutate.
 //
 // PATCH without a new `image` field leaves `imageUrl` completely untouched
 // (openapi.yaml: "Omit the `image` field entirely to keep the item's
@@ -38,52 +46,41 @@ import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image
 // Prisma's `data` omits the key entirely rather than ever passing `null`/
 // clearing it.
 
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its items can't be changed.";
-
 const IMAGE_UPLOAD_ERROR = "Failed to upload the image. Please try again.";
-
-const BRACKET_NOT_FOUND_ERROR = "This bracket no longer exists.";
-
-const ITEM_NOT_FOUND_ERROR = "This item no longer exists.";
 
 type RouteParams = { params: Promise<{ bracketId: string; itemId: string }> };
 
 type OwnedDraftItemLookup =
-  | { ok: true; bracket: { id: string }; item: { id: string; imageUrl: string | null } }
+  | {
+      ok: true;
+      bracket: OwnedBracket;
+      item: { id: string; imageUrl: string | null };
+    }
   | { ok: false; response: Response };
 
 /**
- * The auth -> ownership -> DRAFT-status -> item-lookup pipeline shared by
- * `PATCH` and `DELETE` below, in the same order
+ * The ownership -> DRAFT-status -> item-lookup pipeline shared by `PATCH`
+ * and `DELETE` below, in the same order
  * `src/app/dashboard/brackets/[id]/edit/actions.ts`'s `updateItem`/
- * `removeItem` already use.
+ * `removeItem` already use. Layers the DRAFT-status check and the item
+ * lookup on top of the shared `requireOwnedBracket` (issue #72), which
+ * already covers the auth -> ownership part of this same pipeline.
  */
 async function requireOwnedDraftItem(
   request: Request,
   bracketId: string,
   itemId: string
 ): Promise<OwnedDraftItemLookup> {
-  const userId = await getAuthenticatedUserId(request);
-  if (!userId) {
-    return { ok: false, response: unauthorizedResponse() };
+  const bracketLookup = await requireOwnedBracket(request, bracketId);
+  if (!bracketLookup.ok) {
+    return bracketLookup;
   }
-
-  const bracket = await prisma.bracket.findFirst({
-    where: { id: bracketId, creatorId: userId },
-  });
-
-  if (!bracket) {
-    return {
-      ok: false,
-      response: errorResponse(404, "NOT_FOUND", BRACKET_NOT_FOUND_ERROR),
-    };
-  }
+  const { bracket } = bracketLookup;
 
   if (bracket.status !== "DRAFT") {
     return {
       ok: false,
-      response: errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ERROR),
+      response: errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ITEMS_MESSAGE),
     };
   }
 
@@ -94,7 +91,7 @@ async function requireOwnedDraftItem(
   if (!item) {
     return {
       ok: false,
-      response: errorResponse(404, "NOT_FOUND", ITEM_NOT_FOUND_ERROR),
+      response: errorResponse(404, "NOT_FOUND", ITEM_NOT_FOUND_MESSAGE),
     };
   }
 

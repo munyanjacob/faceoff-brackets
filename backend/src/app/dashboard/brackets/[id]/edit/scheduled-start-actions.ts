@@ -4,6 +4,7 @@ import { notFound, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
+import { NOT_DRAFT_SCHEDULE_MESSAGE } from "@/lib/api/messages";
 import { validateScheduledStartForm } from "./scheduled-start";
 
 /**
@@ -35,9 +36,6 @@ import { validateScheduledStartForm } from "./scheduled-start";
  * the server - never anything trusted from the client - per the issue.
  */
 export type ScheduledStartFormState = { error: string | null };
-
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its start time can't be changed.";
 
 // Issue #36: a generic, user-facing fallback for a DB failure that isn't one
 // of the specific errors above - e.g. the database being temporarily
@@ -76,7 +74,7 @@ export async function updateScheduledStart(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_SCHEDULE_MESSAGE };
     }
 
     const validated = validateScheduledStartForm(formData, new Date());

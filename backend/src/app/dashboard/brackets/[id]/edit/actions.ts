@@ -4,6 +4,7 @@ import { notFound, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
+import { NOT_DRAFT_ITEMS_MESSAGE } from "@/lib/api/messages";
 import { validateBracketItemForm } from "./validation";
 import { uploadBracketItemImage } from "./image-upload";
 
@@ -47,9 +48,6 @@ import { uploadBracketItemImage } from "./image-upload";
  */
 export type ItemFormState = { error: string | null };
 
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its items can't be changed.";
-
 const IMAGE_UPLOAD_ERROR = "Failed to upload the image. Please try again.";
 
 // Issue #36: a generic, user-facing fallback for a DB/Supabase failure that
@@ -91,7 +89,7 @@ export async function addItem(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_ITEMS_MESSAGE };
     }
 
     const validated = validateBracketItemForm(formData);
@@ -135,7 +133,7 @@ export async function updateItem(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_ITEMS_MESSAGE };
     }
 
     const item = await prisma.bracketItem.findFirst({
@@ -190,7 +188,7 @@ export async function removeItem(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_ITEMS_MESSAGE };
     }
 
     const item = await prisma.bracketItem.findFirst({
