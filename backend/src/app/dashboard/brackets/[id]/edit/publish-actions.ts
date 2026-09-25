@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
 import { buildRoundOnePlan } from "@/lib/bracket/build-round-one";
+import { NOT_DRAFT_PUBLISH_MESSAGE } from "@/lib/api/messages";
 import { parseStoredRoundDurationOverrides } from "./round-duration";
 
 /**
@@ -60,8 +61,6 @@ import { parseStoredRoundDurationOverrides } from "./round-duration";
  */
 export type PublishFormState = { error: string | null };
 
-const NOT_DRAFT_ERROR = "This bracket has already been published.";
-
 const NOT_ENOUGH_ITEMS_ERROR =
   "Add at least 2 items before publishing this bracket.";
 
@@ -104,7 +103,7 @@ export async function publishBracket(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_PUBLISH_MESSAGE };
     }
 
     const itemCount = await prisma.bracketItem.count({

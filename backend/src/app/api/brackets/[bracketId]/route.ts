@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUserId } from "@/lib/api/auth";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
-import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
+import { BRACKET_NOT_FOUND_MESSAGE } from "@/lib/api/messages";
+import { toWireBracket } from "@/lib/api/wire-bracket";
 
 // GET /brackets/{bracketId} (issue #51, docs/openapi.yaml's getBracket)
 //
@@ -42,28 +43,18 @@ export const GET = async (
     });
 
     if (!bracket) {
-      return errorResponse(
-        404,
-        "NOT_FOUND",
-        "This bracket no longer exists."
-      );
+      return errorResponse(404, "NOT_FOUND", BRACKET_NOT_FOUND_MESSAGE);
     }
 
     const viewerUserId = await getAuthenticatedUserId(request);
     const viewerIsOwner =
       viewerUserId !== null && viewerUserId === bracket.creatorId;
 
-    return NextResponse.json({
-      ...bracket,
-      // The DB column is nullable and a fresh bracket has never had an
-      // override set (see round-duration.ts's comment); openapi.yaml
-      // documents this field as always an object, never null, so normalize
-      // here rather than leaking the raw column.
-      roundDurationOverrides: parseStoredRoundDurationOverrides(
-        bracket.roundDurationOverrides
-      ),
-      viewerIsOwner,
-    });
+    // The DB column is nullable and a fresh bracket has never had an
+    // override set (see round-duration.ts's comment); openapi.yaml
+    // documents this field as always an object, never null, so normalize
+    // via `toWireBracket` (issue #73) rather than leaking the raw column.
+    return NextResponse.json({ ...toWireBracket(bracket), viewerIsOwner });
   })();
 
   return withCors(request, response);

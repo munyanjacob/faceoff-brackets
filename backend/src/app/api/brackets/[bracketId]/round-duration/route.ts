@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
+import { requireOwnedBracket } from "@/lib/api/require-owned-bracket";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { NOT_DRAFT_ROUND_DURATION_MESSAGE } from "@/lib/api/messages";
+import { pickStringFields } from "@/lib/api/pick-string-fields";
 import {
   computeTotalRounds,
   serializeRoundDurationOverrides,
@@ -23,21 +25,21 @@ import {
 // between the Server Action and this endpoint.
 //
 // `requestBodyToFormData` below only adapts the *shape* of the input (JSON
-// body -> the `FormData` shape `validateRoundDurationForm` expects, the
-// same pattern `POST /brackets` (#51) uses for `validateCreateBracketForm`)
-// - it never re-implements a rule that function already enforces.
+// body -> the `FormData` shape `validateRoundDurationForm` expects, via the
+// shared `pickStringFields` - issue #79 - the same pattern `POST /brackets`
+// (#51) uses for `validateCreateBracketForm`) - it never re-implements a
+// rule that function already enforces.
 //
-// Per spec §4.9: a missing/invalid bearer token is 401 (checked first, so
-// an anonymous caller never reaches the ownership lookup); "doesn't exist"
-// and "exists but isn't owned by the caller" are indistinguishable, both a
-// 404 NOT_FOUND (never 403); a real-but-wrong-state bracket (not DRAFT) is
-// a distinct 409, with the Server Action's exact existing message carried
-// over unchanged.
+// Per spec §4.9: a missing/invalid bearer token is 401 (checked first,
+// inside the shared `requireOwnedBracket` - issue #72 - so an anonymous
+// caller never reaches the ownership lookup); "doesn't exist" and "exists
+// but isn't owned by the caller" are indistinguishable, both a 404
+// NOT_FOUND (never 403); a real-but-wrong-state bracket (not DRAFT) is a
+// distinct 409, with the Server Action's exact existing message
+// (`NOT_DRAFT_ROUND_DURATION_MESSAGE`, `@/lib/api/messages` - issue #74)
+// carried over unchanged.
 
 type RouteParams = { params: Promise<{ bracketId: string }> };
-
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its round durations can't be changed.";
 
 /**
  * Adapts a parsed JSON request body (docs/openapi.yaml's
@@ -45,31 +47,40 @@ const NOT_DRAFT_ERROR =
  * }`, `overrides` keyed by absolute round number as a string) into the
  * `FormData` shape `validateRoundDurationForm` expects
  * (`defaultRoundDurationMinutes` plus one `roundOverride-<n>` field per
- * override), so that function can be reused unmodified. A non-string/
- * non-number value for either field is simply left unset on the resulting
- * `FormData` - `validateRoundDurationForm` already treats a missing field
- * as "not provided" and handles it with its normal, exact error string (or,
- * for an override, silently as "no override for that round").
+ * override), so that function can be reused unmodified. `pickStringFields`
+ * (`@/lib/api/pick-string-fields`, issue #79) does the actual per-field
+ * type-checking/coercion; a non-string/non-number value for either field is
+ * simply left unset on the resulting `FormData` -
+ * `validateRoundDurationForm` already treats a missing field as "not
+ * provided" and handles it with its normal, exact error string (or, for an
+ * override, silently as "no override for that round").
  */
 function requestBodyToFormData(body: unknown): FormData {
   const formData = new FormData();
-  if (body === null || typeof body !== "object") {
-    return formData;
-  }
-  const record = body as Record<string, unknown>;
 
-  const defaultValue = record.defaultRoundDurationMinutes;
-  if (typeof defaultValue === "number" || typeof defaultValue === "string") {
-    formData.set("defaultRoundDurationMinutes", String(defaultValue));
+  const topLevel = pickStringFields(body, [
+    "defaultRoundDurationMinutes",
+  ] as const);
+  if (topLevel.defaultRoundDurationMinutes !== undefined) {
+    formData.set(
+      "defaultRoundDurationMinutes",
+      topLevel.defaultRoundDurationMinutes
+    );
   }
 
-  const overrides = record.overrides;
-  if (overrides !== null && typeof overrides === "object") {
-    for (const [roundNumber, minutes] of Object.entries(
-      overrides as Record<string, unknown>
-    )) {
-      if (typeof minutes === "number" || typeof minutes === "string") {
-        formData.set(`roundOverride-${roundNumber}`, String(minutes));
+  const overrides =
+    body !== null && typeof body === "object"
+      ? (body as Record<string, unknown>).overrides
+      : undefined;
+  if (overrides !== null && overrides !== undefined && typeof overrides === "object") {
+    const overrideRecord = overrides as Record<string, unknown>;
+    const overrideFields = pickStringFields(
+      overrideRecord,
+      Object.keys(overrideRecord)
+    );
+    for (const [roundNumber, minutes] of Object.entries(overrideFields)) {
+      if (minutes !== undefined) {
+        formData.set(`roundOverride-${roundNumber}`, minutes);
       }
     }
   }
@@ -82,23 +93,16 @@ export const PATCH = async (
   { params }: RouteParams
 ): Promise<Response> => {
   const response = await withErrorHandling(async () => {
-    const userId = await getAuthenticatedUserId(request);
-    if (!userId) {
-      return unauthorizedResponse();
-    }
-
     const { bracketId } = await params;
 
-    const bracket = await prisma.bracket.findFirst({
-      where: { id: bracketId, creatorId: userId },
-    });
-
-    if (!bracket) {
-      return errorResponse(404, "NOT_FOUND", "This bracket no longer exists.");
+    const lookup = await requireOwnedBracket(request, bracketId);
+    if (!lookup.ok) {
+      return lookup.response;
     }
+    const { bracket } = lookup;
 
     if (bracket.status !== "DRAFT") {
-      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ERROR);
+      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ROUND_DURATION_MESSAGE);
     }
 
     const itemCount = await prisma.bracketItem.count({
@@ -135,6 +139,13 @@ export const PATCH = async (
       },
     });
 
+    // Unlike the other bracket-returning endpoints (`toWireBracket`, issue
+    // #73), this route doesn't need to normalize `roundDurationOverrides`
+    // here - `update`'s own `data` just set it to
+    // `serializeRoundDurationOverrides(...)`'s result, which is always a
+    // plain object (never null), so `updated.roundDurationOverrides` is
+    // already in the openapi.yaml-documented shape without going through
+    // `parseStoredRoundDurationOverrides` first.
     return NextResponse.json(updated);
   })();
 

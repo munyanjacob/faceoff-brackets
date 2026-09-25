@@ -3,8 +3,9 @@ import { prisma } from "@/lib/prisma";
 import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { toWireBracket } from "@/lib/api/wire-bracket";
+import { pickStringFields } from "@/lib/api/pick-string-fields";
 import { validateCreateBracketForm } from "@/app/dashboard/brackets/new/validation";
-import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // POST /brackets (issue #51, docs/openapi.yaml's createBracket)
 //
@@ -28,28 +29,24 @@ const PLACEHOLDER_DEFAULT_ROUND_DURATION_MINUTES = 60;
 /**
  * Adapts a parsed JSON request body into the `FormData` shape
  * `validateCreateBracketForm` expects, so that function can be reused
- * unmodified. Only lifts the four fields `CreateBracketRequest` defines;
- * anything else on the body is ignored. A field that isn't a string (missing,
- * `null`, a number, etc.) is simply left unset on the resulting `FormData` -
- * `formData.get(...)` then returns `null`, which
+ * unmodified, via the shared `pickStringFields` (`@/lib/api/pick-string-
+ * fields`, issue #79). Only lifts the four fields `CreateBracketRequest`
+ * defines; anything else on the body is ignored. A field that isn't a
+ * string/number (missing, `null`, etc.) is simply left unset on the
+ * resulting `FormData` - `formData.get(...)` then returns `null`, which
  * `validateCreateBracketForm` already treats as "missing" and rejects with
  * its normal, exact error string.
  */
 function requestBodyToFormData(body: unknown): FormData {
   const formData = new FormData();
-  if (body !== null && typeof body === "object") {
-    const record = body as Record<string, unknown>;
-    for (const key of [
-      "title",
-      "description",
-      "visibility",
-      "votingRequirement",
-    ] as const) {
-      const value = record[key];
-      if (typeof value === "string") {
-        formData.set(key, value);
-      }
-    }
+  const fields = pickStringFields(body, [
+    "title",
+    "description",
+    "visibility",
+    "votingRequirement",
+  ] as const);
+  for (const [key, value] of Object.entries(fields)) {
+    formData.set(key, value);
   }
   return formData;
 }
@@ -90,18 +87,10 @@ export const POST = async (request: Request): Promise<Response> => {
       },
     });
 
-    return NextResponse.json(
-      {
-        ...bracket,
-        // See brackets/[bracketId]/route.ts's identical normalization -
-        // a fresh bracket's column is null, but openapi.yaml documents
-        // this field as always an object.
-        roundDurationOverrides: parseStoredRoundDurationOverrides(
-          bracket.roundDurationOverrides
-        ),
-      },
-      { status: 201 }
-    );
+    // See `toWireBracket`'s own doc comment (issue #73) - a fresh bracket's
+    // column is null, but openapi.yaml documents this field as always an
+    // object.
+    return NextResponse.json(toWireBracket(bracket), { status: 201 });
   })();
 
   return withCors(request, response);

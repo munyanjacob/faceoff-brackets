@@ -1,13 +1,15 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
+import { requireOwnedBracket } from "@/lib/api/require-owned-bracket";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { NOT_DRAFT_SCHEDULE_MESSAGE } from "@/lib/api/messages";
+import { toWireBracket } from "@/lib/api/wire-bracket";
+import { pickStringFields } from "@/lib/api/pick-string-fields";
 import {
   type ScheduleRequestInput,
   validateScheduleRequest,
 } from "@/app/dashboard/brackets/[id]/edit/scheduled-start";
-import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
 
 // PATCH /brackets/{bracketId}/schedule (issue #53, docs/openapi.yaml's
 // updateSchedule)
@@ -37,26 +39,26 @@ import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]
 
 type RouteParams = { params: Promise<{ bracketId: string }> };
 
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its start time can't be changed.";
-
 /**
  * Reads `docs/openapi.yaml`'s `UpdateScheduleRequest` fields
  * (`startMode`/`scheduledStartAt`) off a parsed JSON body into the shape
- * `validateScheduleRequest` expects. Both fields are left `unknown` -
+ * `validateScheduleRequest` expects, via the shared `pickStringFields`
+ * (`@/lib/api/pick-string-fields`, issue #79) - the same "for each known
+ * field, pick it off the body" adapter shape `POST /brackets` and
+ * `PATCH .../round-duration` use. A non-string/non-number value for either
+ * field (missing, `null`, a boolean, ...) is simply left `undefined` here;
  * `validateScheduleRequest` itself is responsible for rejecting anything
- * that isn't the right type/shape, the same "let the validator decide"
- * split `requestBodyToFormData` uses for the JSON `POST /brackets` and
- * `PATCH .../round-duration` endpoints.
+ * that isn't the right type/shape - this is only picking the fields off,
+ * never narrowing what counts as valid.
  */
 function toScheduleRequestInput(body: unknown): ScheduleRequestInput {
-  if (body === null || typeof body !== "object") {
-    return { startMode: undefined, scheduledStartAt: undefined };
-  }
-  const record = body as Record<string, unknown>;
+  const picked = pickStringFields(body, [
+    "startMode",
+    "scheduledStartAt",
+  ] as const);
   return {
-    startMode: record.startMode,
-    scheduledStartAt: record.scheduledStartAt,
+    startMode: picked.startMode,
+    scheduledStartAt: picked.scheduledStartAt,
   };
 }
 
@@ -65,23 +67,16 @@ export const PATCH = async (
   { params }: RouteParams
 ): Promise<Response> => {
   const response = await withErrorHandling(async () => {
-    const userId = await getAuthenticatedUserId(request);
-    if (!userId) {
-      return unauthorizedResponse();
-    }
-
     const { bracketId } = await params;
 
-    const bracket = await prisma.bracket.findFirst({
-      where: { id: bracketId, creatorId: userId },
-    });
-
-    if (!bracket) {
-      return errorResponse(404, "NOT_FOUND", "This bracket no longer exists.");
+    const lookup = await requireOwnedBracket(request, bracketId);
+    if (!lookup.ok) {
+      return lookup.response;
     }
+    const { bracket } = lookup;
 
     if (bracket.status !== "DRAFT") {
-      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ERROR);
+      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_SCHEDULE_MESSAGE);
     }
 
     // A malformed/empty JSON body falls through as `{}`, which
@@ -110,15 +105,10 @@ export const PATCH = async (
       data: { scheduledStartAt: validated.data.scheduledStartAt },
     });
 
-    return NextResponse.json({
-      ...updated,
-      // See brackets/[bracketId]/route.ts's identical normalization - this
-      // update only touches scheduledStartAt, so the column is still null
-      // when round-duration has never been PATCHed for this bracket.
-      roundDurationOverrides: parseStoredRoundDurationOverrides(
-        updated.roundDurationOverrides
-      ),
-    });
+    // See `toWireBracket`'s own doc comment (issue #73) - this update only
+    // touches scheduledStartAt, so the column is still null when
+    // round-duration has never been PATCHed for this bracket.
+    return NextResponse.json(toWireBracket(updated));
   })();
 
   return withCors(request, response);

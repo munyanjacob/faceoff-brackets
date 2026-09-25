@@ -4,6 +4,7 @@ import { notFound, unstable_rethrow } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { createClient } from "@/lib/supabase/server";
+import { NOT_DRAFT_ROUND_DURATION_MESSAGE } from "@/lib/api/messages";
 import {
   computeTotalRounds,
   serializeRoundDurationOverrides,
@@ -42,9 +43,6 @@ import {
  */
 export type RoundDurationFormState = { error: string | null };
 
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its round durations can't be changed.";
-
 // Issue #36: a generic, user-facing fallback for a DB failure that isn't one
 // of the specific errors above - e.g. the database being temporarily
 // unreachable. Rendered inline by `./round-duration-form.tsx` the same way
@@ -82,7 +80,7 @@ export async function updateRoundDuration(
     const bracket = await requireOwnedBracket(bracketId);
 
     if (bracket.status !== "DRAFT") {
-      return { error: NOT_DRAFT_ERROR };
+      return { error: NOT_DRAFT_ROUND_DURATION_MESSAGE };
     }
 
     const itemCount = await prisma.bracketItem.count({

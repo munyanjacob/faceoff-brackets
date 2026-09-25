@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { getAuthenticatedUserId, unauthorizedResponse } from "@/lib/api/auth";
+import { requireOwnedBracket } from "@/lib/api/require-owned-bracket";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
+import { NOT_DRAFT_ITEMS_MESSAGE } from "@/lib/api/messages";
 import { validateBracketItemForm } from "@/app/dashboard/brackets/[id]/edit/validation";
 import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image-upload";
 
@@ -12,15 +13,16 @@ import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image
 // Creator-only - wraps the same ownership-scoped lookup and items query
 // `src/app/dashboard/brackets/[id]/edit/page.tsx` (#11) already runs:
 // `prisma.bracket.findFirst({ where: { id, creatorId } })` (never `id`
-// alone), then `prisma.bracketItem.findMany` scoped to that bracket's id,
-// newest-item-last (`createdAt: "asc"`, i.e. creation order).
+// alone, via the shared `requireOwnedBracket` - issue #72), then
+// `prisma.bracketItem.findMany` scoped to that bracket's id, newest-item-
+// last (`createdAt: "asc"`, i.e. creation order).
 //
 // Per spec §4.9's authorization pattern: not found *and* not-owned are
 // indistinguishable, both 404 via the same `NOT_FOUND` body - never a 403,
 // so a non-owner can't learn a bracket with this id exists at all. A
-// missing/invalid bearer token is the separate 401 case
-// (`unauthorizedResponse()`), checked first so an anonymous caller never
-// even reaches the ownership lookup.
+// missing/invalid bearer token is the separate 401 case, checked first
+// (inside `requireOwnedBracket`) so an anonymous caller never even reaches
+// the ownership lookup.
 //
 // POST /brackets/{bracketId}/items (issue #52, docs/openapi.yaml's
 // addBracketItem) lands below GET in this same file, matching #51's plan.
@@ -43,9 +45,6 @@ import { uploadBracketItemImage } from "@/app/dashboard/brackets/[id]/edit/image
 // `NOT_DRAFT`) -> form validation (400) -> image upload, if any (502,
 // `IMAGE_UPLOAD_FAILED`, per openapi.yaml) -> create.
 
-const NOT_DRAFT_ERROR =
-  "This bracket is no longer a draft, so its items can't be changed.";
-
 const IMAGE_UPLOAD_ERROR = "Failed to upload the image. Please try again.";
 
 type RouteParams = { params: Promise<{ bracketId: string }> };
@@ -55,27 +54,15 @@ export const GET = async (
   { params }: RouteParams
 ): Promise<Response> => {
   const response = await withErrorHandling(async () => {
-    const userId = await getAuthenticatedUserId(request);
-    if (!userId) {
-      return unauthorizedResponse();
-    }
-
     const { bracketId } = await params;
 
-    const bracket = await prisma.bracket.findFirst({
-      where: { id: bracketId, creatorId: userId },
-    });
-
-    if (!bracket) {
-      return errorResponse(
-        404,
-        "NOT_FOUND",
-        "This bracket no longer exists."
-      );
+    const lookup = await requireOwnedBracket(request, bracketId);
+    if (!lookup.ok) {
+      return lookup.response;
     }
 
     const items = await prisma.bracketItem.findMany({
-      where: { bracketId: bracket.id },
+      where: { bracketId: lookup.bracket.id },
       orderBy: { createdAt: "asc" },
     });
 
@@ -90,27 +77,16 @@ export const POST = async (
   { params }: RouteParams
 ): Promise<Response> => {
   const response = await withErrorHandling(async () => {
-    const userId = await getAuthenticatedUserId(request);
-    if (!userId) {
-      return unauthorizedResponse();
-    }
-
     const { bracketId } = await params;
 
-    const bracket = await prisma.bracket.findFirst({
-      where: { id: bracketId, creatorId: userId },
-    });
-
-    if (!bracket) {
-      return errorResponse(
-        404,
-        "NOT_FOUND",
-        "This bracket no longer exists."
-      );
+    const lookup = await requireOwnedBracket(request, bracketId);
+    if (!lookup.ok) {
+      return lookup.response;
     }
+    const { bracket } = lookup;
 
     if (bracket.status !== "DRAFT") {
-      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ERROR);
+      return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_ITEMS_MESSAGE);
     }
 
     const formData = await request.formData();
