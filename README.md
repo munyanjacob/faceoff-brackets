@@ -102,6 +102,32 @@ Run from inside `backend/`:
 | `npx prisma studio` | Browse/edit database rows locally |
 | `npx prisma migrate dev` | Apply schema changes to the database |
 
+## Docker (backend + frontend in one image)
+
+The repo-root `Dockerfile` builds `frontend/` as a static SPA and bundles it
+into `backend/`'s Next.js server, which then serves the UI for every
+non-`/api` path and the REST API under `/api` — one container, one origin.
+Run from the repo root:
+
+```
+docker build -t faceoff-brackets .
+docker run -p 3000:3000 --env-file backend/.env.local faceoff-brackets
+```
+
+The app is then at http://localhost:3000. Runtime env vars are the same as
+`backend/.env.example`'s (`NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_ANON_KEY` are required — every request passes through
+`src/proxy.ts`'s Supabase session refresh). `VOTER_COOKIE_DOMAIN` defaults
+to empty (a host-only cookie, since the UI and API share an origin) and
+`FRONTEND_ORIGIN` is unused in this setup. The frontend's Supabase values
+are baked in at build time from the checked-in `frontend/.env`;
+`VITE_API_BASE_URL` defaults to `/api` and can be overridden with
+`--build-arg VITE_API_BASE_URL=...`.
+
+The image doesn't run migrations — apply them with `npx prisma migrate
+deploy` from `backend/` first. Nor does it schedule round advancement; call
+`/api/cron/advance-rounds` from an external scheduler as described above.
+
 ## Frontend
 
 `frontend/` is a separate app with its own dependencies and its own
