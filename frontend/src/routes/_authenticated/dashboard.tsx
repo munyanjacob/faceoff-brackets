@@ -3,17 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { bracketService, type BracketStatus, type BracketWithRounds } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   head: () => ({
-    meta: [
-      { title: "My brackets — Bracket Arena" },
-      { name: "description", content: "Manage the brackets you've created." },
-      { property: "og:title", content: "My brackets — Bracket Arena" },
-      { property: "og:description", content: "Manage the brackets you've created." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "My brackets — Bracket Arena",
+      description: "Manage the brackets you've created.",
+    }),
   }),
   component: Dashboard,
 });

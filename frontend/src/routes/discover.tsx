@@ -2,23 +2,15 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { StatusPill } from "@/components/status-pill";
 import { discoveryService, type DiscoverRow } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/discover")({
   head: () => ({
-    meta: [
-      { title: "Discover brackets — Bracket Arena" },
-      {
-        name: "description",
-        content: "Browse public voting brackets: starting soon, live right now, and finished.",
-      },
-      { property: "og:title", content: "Discover brackets — Bracket Arena" },
-      {
-        property: "og:description",
-        content: "Browse public voting brackets: starting soon, live right now, and finished.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
+    meta: pageMeta({
+      title: "Discover brackets — Bracket Arena",
+      description: "Browse public voting brackets: starting soon, live right now, and finished.",
+      twitterCard: "summary_large_image",
+    }),
   }),
   component: Discover,
 });

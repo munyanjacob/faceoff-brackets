@@ -2,20 +2,14 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { resultsService, type BracketItem } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/brackets/$bracketId/matchups/$matchupId/result")({
   head: () => ({
-    meta: [
-      { title: "Matchup result — Bracket Arena" },
-      { name: "description", content: "See who advanced, the final tally, and voter comments." },
-      { property: "og:title", content: "Matchup result — Bracket Arena" },
-      {
-        property: "og:description",
-        content: "See who advanced, the final tally, and voter comments.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Matchup result — Bracket Arena",
+      description: "See who advanced, the final tally, and voter comments.",
+    }),
   }),
   component: ResultPage,
 });

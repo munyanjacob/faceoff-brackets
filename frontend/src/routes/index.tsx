@@ -3,24 +3,17 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { discoveryService } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/")({
   head: () => ({
-    meta: [
-      { title: "Bracket Arena — Head-to-head voting brackets" },
-      {
-        name: "description",
-        content:
-          "Build a timed tournament bracket, publish it, and let the crowd vote one matchup at a time until a champion is crowned.",
-      },
-      { property: "og:title", content: "Bracket Arena — Head-to-head voting brackets" },
-      {
-        property: "og:description",
-        content: "Timed, head-to-head bracket voting. Build it, publish it, crown a champion.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
-    ],
+    meta: pageMeta({
+      title: "Bracket Arena — Head-to-head voting brackets",
+      description:
+        "Build a timed tournament bracket, publish it, and let the crowd vote one matchup at a time until a champion is crowned.",
+      ogDescription: "Timed, head-to-head bracket voting. Build it, publish it, crown a champion.",
+      twitterCard: "summary_large_image",
+    }),
   }),
   component: Landing,
 });

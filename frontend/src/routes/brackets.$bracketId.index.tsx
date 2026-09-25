@@ -4,23 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { bracketService, votingService, type MatchupSummary } from "@/services";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/brackets/$bracketId/")({
   head: () => ({
-    meta: [
-      { title: "Vote in this bracket — Bracket Arena" },
-      {
-        name: "description",
-        content: "Pick a side in every open matchup before the round clock runs out.",
-      },
-      { property: "og:title", content: "Vote in this bracket — Bracket Arena" },
-      {
-        property: "og:description",
-        content: "Pick a side in every open matchup before the round clock runs out.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Vote in this bracket — Bracket Arena",
+      description: "Pick a side in every open matchup before the round clock runs out.",
+    }),
   }),
   component: BracketPage,
 });

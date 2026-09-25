@@ -13,23 +13,16 @@ import {
   type BracketItem,
 } from "@/services";
 import { generateFirstRound, roundLabel, totalRoundsFor } from "@/lib/bracket-logic";
+import { pageMeta } from "@/lib/pageMeta";
 
 export const Route = createFileRoute("/_authenticated/brackets/$bracketId/edit")({
   head: () => ({
-    meta: [
-      { title: "Edit bracket — Bracket Arena" },
-      {
-        name: "description",
-        content: "Add contenders, set round timers, choose a start time, and publish your bracket.",
-      },
-      { property: "og:title", content: "Edit bracket — Bracket Arena" },
-      {
-        property: "og:description",
-        content: "Add contenders, set round timers, choose a start time, and publish.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
+    meta: pageMeta({
+      title: "Edit bracket — Bracket Arena",
+      description:
+        "Add contenders, set round timers, choose a start time, and publish your bracket.",
+      ogDescription: "Add contenders, set round timers, choose a start time, and publish.",
+    }),
   }),
   component: EditBracket,
 });
