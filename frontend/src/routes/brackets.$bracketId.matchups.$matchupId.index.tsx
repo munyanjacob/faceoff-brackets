@@ -17,7 +17,7 @@ export const Route = createFileRoute("/brackets/$bracketId/matchups/$matchupId/"
   component: VotePage,
 });
 
-function Side({
+function VoteChoice({
   item,
   selected,
   votes,
@@ -109,7 +109,7 @@ function VotePage() {
       </p>
 
       <div className="mt-8 grid gap-4 sm:grid-cols-2">
-        <Side
+        <VoteChoice
           item={matchup.itemA}
           selected={existingVoteItemId === matchup.itemA.id}
           votes={voteCounts ? (voteCounts[matchup.itemA.id] ?? 0) : null}
@@ -117,7 +117,7 @@ function VotePage() {
           onSelect={() => vote(matchup.itemA.id)}
         />
         {matchup.itemB && (
-          <Side
+          <VoteChoice
             item={matchup.itemB}
             selected={existingVoteItemId === matchup.itemB.id}
             votes={voteCounts ? (voteCounts[matchup.itemB.id] ?? 0) : null}

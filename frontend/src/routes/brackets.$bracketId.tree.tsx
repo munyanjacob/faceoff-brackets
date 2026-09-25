@@ -15,7 +15,7 @@ export const Route = createFileRoute("/brackets/$bracketId/tree")({
   component: TreePage,
 });
 
-function Side({ title, highlight }: { title: string; highlight: boolean }) {
+function TreeSideLabel({ title, highlight }: { title: string; highlight: boolean }) {
   return (
     <div
       className={`flex items-center justify-between rounded px-3 py-2 text-sm ${
@@ -37,8 +37,8 @@ function Cell({ bracketId, cell }: { bracketId: string; cell: MatchupCell }) {
   if (cell.kind === "upcoming") {
     return (
       <div className="arena-panel block space-y-2 p-3 opacity-60">
-        <Side title="TBD" highlight={false} />
-        <Side title="TBD" highlight={false} />
+        <TreeSideLabel title="TBD" highlight={false} />
+        <TreeSideLabel title="TBD" highlight={false} />
       </div>
     );
   }
@@ -65,8 +65,8 @@ function Cell({ bracketId, cell }: { bracketId: string; cell: MatchupCell }) {
       params={{ bracketId, matchupId: cell.matchupId }}
       className="arena-panel block space-y-2 p-3 transition-transform hover:-translate-y-0.5"
     >
-      <Side title={top.title} highlight={top.highlight} />
-      <Side title={bottom.title} highlight={bottom.highlight} />
+      <TreeSideLabel title={top.title} highlight={top.highlight} />
+      <TreeSideLabel title={bottom.title} highlight={bottom.highlight} />
     </Link>
   );
 }
