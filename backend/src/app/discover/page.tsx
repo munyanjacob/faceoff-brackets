@@ -1,3 +1,4 @@
+import { connection } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DiscoveryGroups } from "./discovery-groups";
 import { groupPublicBrackets } from "./discovery-view-model";
@@ -24,6 +25,12 @@ import { groupPublicBrackets } from "./discovery-view-model";
  * uniformly so each group is newest-published-first.
  */
 export default async function DiscoverPage() {
+  // Nothing else here reads the request, so without this Next prerenders
+  // the page at build time - querying the database from `next build` (which
+  // fails in the Docker build, with no database reachable) and freezing the
+  // list at that snapshot. See node_modules/next/dist/docs/.../connection.md.
+  await connection();
+
   const brackets = await prisma.bracket.findMany({
     where: {
       visibility: "PUBLIC",

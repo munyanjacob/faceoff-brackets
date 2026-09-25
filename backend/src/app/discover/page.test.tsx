@@ -8,6 +8,10 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// `connection()` needs a real request scope, which calling the page
+// directly doesn't provide.
+vi.mock("next/server", () => ({ connection: vi.fn(async () => {}) }));
+
 const { default: DiscoverPage } = await import("./page");
 
 describe("/discover page", () => {
