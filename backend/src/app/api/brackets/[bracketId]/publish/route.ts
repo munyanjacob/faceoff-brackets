@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { requireOwnedBracket } from "@/lib/api/require-owned-bracket";
 import { preflightResponse, withCors } from "@/lib/api/cors";
 import { errorResponse, withErrorHandling } from "@/lib/api/errors";
 import { NOT_DRAFT_PUBLISH_MESSAGE } from "@/lib/api/messages";
 import { toWireBracket } from "@/lib/api/wire-bracket";
-import { buildRoundOnePlan } from "@/lib/bracket/build-round-one";
-import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]/edit/round-duration";
+import {
+  publishBracketCore,
+  NOT_ENOUGH_ITEMS_ERROR,
+} from "@/lib/bracket/publish-core";
 
 /**
  * `POST /brackets/{bracketId}/publish` (issue #54, docs/openapi.yaml's
@@ -14,23 +15,15 @@ import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]
  * `../../../dashboard/brackets/[id]/edit/publish-actions.ts`'s
  * `publishBracket` Server Action.
  *
- * This does not import/call the Server Action directly - a Server Action is
- * tied to `FormData` + Next's `useActionState` calling convention (and its
- * `notFound()`/`unstable_rethrow` control flow) and can't be invoked as a
- * plain function from a Route Handler. Instead this re-derives the exact
- * same persistence logic that Server Action runs - same
- * `bracket.findFirst({ id, creatorId })` ownership scoping, same
- * `>= 2 items` guard, same `scheduledStartAt` → SCHEDULED/ACTIVE decision,
- * same `parseStoredRoundDurationOverrides` duration resolution, and,
- * crucially, the exact same `buildRoundOnePlan` call (which itself wraps
- * `generateFirstRound`, #17) feeding the exact same one
- * `prisma.$transaction` shape for the `Bracket` update + `Round`/`Matchup`
- * creation - so round 1's bye/pairing algorithm can never disagree between
- * the dashboard's Server Action and this REST endpoint.
+ * A thin adapter (issue #77) over `@/lib/bracket/publish-core.ts`'s
+ * `publishBracketCore`, which owns the actual DRAFT/item-count/transaction
+ * rules shared with the Server Action above - so round 1's bye/pairing
+ * algorithm and the publish preconditions can never disagree between the
+ * dashboard and this REST endpoint.
  *
- * Two differences, both dictated by this being a separate, stateless REST
- * API rather than a same-origin Server Action (per
- * docs/frontend-rework-specification.md §6):
+ * Two differences from the Server Action, both dictated by this being a
+ * separate, stateless REST API rather than a same-origin Server Action
+ * (per docs/frontend-rework-specification.md §6):
  * - Identity source: a bearer token via the shared `requireOwnedBracket`
  *   (`@/lib/api/require-owned-bracket`, issue #72), never a cookie-bound
  *   Supabase session. A missing/invalid token is a 401 here, not a
@@ -48,19 +41,15 @@ import { parseStoredRoundDurationOverrides } from "@/app/dashboard/brackets/[id]
  *   #73) instead of `PublishFormState`. The `NOT_DRAFT`/`TOO_FEW_ITEMS`
  *   codes and their exact message strings come straight from
  *   openapi.yaml's documented 409 examples for this operation, and match
- *   `publish-actions.ts`'s own `NOT_DRAFT_ERROR`/`NOT_ENOUGH_ITEMS_ERROR`
- *   constants verbatim - `NOT_DRAFT_PUBLISH_MESSAGE` (`@/lib/api/messages`,
- *   issue #74) is now the one shared source for that wording.
+ *   `publish-actions.ts`'s own wording verbatim -
+ *   `NOT_DRAFT_PUBLISH_MESSAGE` (`@/lib/api/messages`, issue #74) and
+ *   `NOT_ENOUGH_ITEMS_ERROR` (`@/lib/bracket/publish-core`) are now the one
+ *   shared source for each.
  *
  * Also, deliberately, no `revalidatePath` call (unlike the Server Action) -
  * spec §7.6/§8.3: refetching after a mutation is the new frontend's own
  * concern once split from Next's same-origin cache.
  */
-
-const NOT_ENOUGH_ITEMS_ERROR =
-  "Add at least 2 items before publishing this bracket.";
-
-const MINIMUM_ITEM_COUNT = 2;
 
 type RouteParams = { params: Promise<{ bracketId: string }> };
 
@@ -77,84 +66,25 @@ async function handlePost(
   if (!lookup.ok) {
     return lookup.response;
   }
-  const { bracket } = lookup;
 
-  // A bracket that exists and is owned but isn't DRAFT is a distinct,
-  // non-404 case (spec §4.9) - publish is one-way, so this also covers
-  // "already published" for a stale tab / double click / direct re-request.
-  if (bracket.status !== "DRAFT") {
+  const outcome = await publishBracketCore(lookup.bracket);
+
+  if (outcome.kind === "notDraft") {
+    // A bracket that exists and is owned but isn't DRAFT is a distinct,
+    // non-404 case (spec §4.9) - publish is one-way, so this also covers
+    // "already published" for a stale tab / double click / direct
+    // re-request.
     return errorResponse(409, "NOT_DRAFT", NOT_DRAFT_PUBLISH_MESSAGE);
   }
 
-  const itemCount = await prisma.bracketItem.count({
-    where: { bracketId: bracket.id },
-  });
-
-  if (itemCount < MINIMUM_ITEM_COUNT) {
+  if (outcome.kind === "tooFewItems") {
     return errorResponse(409, "TOO_FEW_ITEMS", NOT_ENOUGH_ITEMS_ERROR);
   }
-
-  const status = bracket.scheduledStartAt ? "SCHEDULED" : "ACTIVE";
-  const immediateStart = status === "ACTIVE";
-  const publishedAt = new Date();
-
-  // Same order `publish-actions.ts`/the edit-page preview read items in -
-  // `orderBy: { createdAt: "asc" }` - so this can never produce different
-  // pairings than the dashboard's own preview/publish for this item list.
-  const items = await prisma.bracketItem.findMany({
-    where: { bracketId: bracket.id },
-    orderBy: { createdAt: "asc" },
-  });
-
-  const overrides = parseStoredRoundDurationOverrides(
-    bracket.roundDurationOverrides
-  );
-  const durationMinutes = overrides[1] ?? bracket.defaultRoundDurationMinutes;
-
-  // Reused as-is (#54's constraint) - never reimplemented - so round 1's
-  // bye/pairing algorithm can't drift from the dashboard's Server Action or
-  // the edit-page preview.
-  const roundPlan = buildRoundOnePlan(items, {
-    durationMinutes,
-    immediateStart,
-    now: publishedAt,
-  });
-
-  // One transaction, same shape as publish-actions.ts: the Bracket update
-  // and Round+Matchup creation happen together so a bracket can never be
-  // left ACTIVE/SCHEDULED with no Round row if something fails partway.
-  const updatedBracket = await prisma.$transaction(async (tx) => {
-    const updated = await tx.bracket.update({
-      where: { id: bracket.id },
-      data: { status, publishedAt },
-    });
-
-    await tx.round.create({
-      data: {
-        bracketId: bracket.id,
-        roundNumber: roundPlan.roundNumber,
-        durationMinutes: roundPlan.durationMinutes,
-        status: roundPlan.status,
-        startsAt: roundPlan.startsAt,
-        endsAt: roundPlan.endsAt,
-        matchups: {
-          create: roundPlan.matchups.map((matchup) => ({
-            itemAId: matchup.itemAId,
-            itemBId: matchup.itemBId,
-            winnerItemId: matchup.winnerItemId,
-            status: matchup.status,
-          })),
-        },
-      },
-    });
-
-    return updated;
-  });
 
   // See `toWireBracket`'s own doc comment (issue #73) - this update only
   // touches status/publishedAt, so the column is still null when
   // round-duration has never been PATCHed for this bracket.
-  return NextResponse.json(toWireBracket(updatedBracket));
+  return NextResponse.json(toWireBracket(outcome.bracket));
 }
 
 /**
