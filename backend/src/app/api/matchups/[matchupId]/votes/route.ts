@@ -94,8 +94,8 @@ function errorOutcome(
   status: number,
   code: string,
   message: string
-): CastVoteResult {
-  return { outcome: { kind: "error", status, code, message }, newAnonymousVoterId: null };
+): VoteOutcome {
+  return { kind: "error", status, code, message };
 }
 
 async function readCastVoteBody(
@@ -121,31 +121,65 @@ async function readCastVoteBody(
   return { itemId: "", comment: "" };
 }
 
-/**
- * The ordered rule list itself (spec §4.7, numbered 1-9 in its own
- * comments below). Every step is a real, independent check against the
- * database - never trusting that a client only ever sent a request that
- * could have come from a reachable vote button.
- */
-async function castVoteViaApi(
-  request: NextRequest,
-  matchupId: string
-): Promise<CastVoteResult> {
-  // 1. Matchup must exist.
-  const matchup = await prisma.matchup.findUnique({
+// Derived once matchup status is known (§4.4) - never accepted from the
+// client. Shared by every step function that needs to scope a Vote lookup/
+// insert by it.
+type VotePhase = "ORIGINAL" | "TIE_BREAKER";
+
+// A step's result: either its success value, or a fully-formed VoteOutcome
+// ready to short-circuit the orchestrator below. Threading VoteOutcome
+// (rather than a bespoke error shape per step) means every step can return
+// its rejection exactly as `outcomeToResponse` will render it, with no
+// translation layer in the orchestrator.
+type StepResult<T> = { ok: true; value: T } | { ok: false; error: VoteOutcome };
+
+function fetchMatchupWithContext(matchupId: string) {
+  return prisma.matchup.findUnique({
     where: { id: matchupId },
     include: { round: { include: { bracket: true } } },
   });
+}
+
+type MatchupWithContext = NonNullable<
+  Awaited<ReturnType<typeof fetchMatchupWithContext>>
+>;
+
+/**
+ * §4.7 steps 1-4: matchup existence, item validity, round status, matchup
+ * status - the "is this vote even attemptable" checks, independent of
+ * voter identity or persistence. Body parsing lives here too (rather than
+ * its own step) since step 2 needs `itemId` out of it and there'd
+ * otherwise be nothing to do with a parsed body before this returns.
+ */
+async function validateMatchupAndItem(
+  request: NextRequest,
+  matchupId: string
+): Promise<
+  StepResult<{
+    matchup: MatchupWithContext;
+    itemId: string;
+    rawComment: string;
+    phase: VotePhase;
+  }>
+> {
+  // 1. Matchup must exist.
+  const matchup = await fetchMatchupWithContext(matchupId);
 
   if (!matchup) {
-    return errorOutcome(404, "MATCHUP_NOT_FOUND", MATCHUP_NOT_FOUND_ERROR);
+    return {
+      ok: false,
+      error: errorOutcome(404, "MATCHUP_NOT_FOUND", MATCHUP_NOT_FOUND_ERROR),
+    };
   }
 
   const { itemId, comment: rawComment } = await readCastVoteBody(request);
 
   // 2. itemId must be one of the matchup's two items.
   if (matchup.itemAId !== itemId && matchup.itemBId !== itemId) {
-    return errorOutcome(400, "INVALID_ITEM", INVALID_ITEM_ERROR);
+    return {
+      ok: false,
+      error: errorOutcome(400, "INVALID_ITEM", INVALID_ITEM_ERROR),
+    };
   }
 
   // 3. The matchup's round must be ACTIVE (not PENDING/COMPLETED). A round
@@ -154,95 +188,138 @@ async function castVoteViaApi(
   // the isVotableMatchupStatus check below never fight each other during a
   // tie-breaker window.
   if (matchup.round.status !== "ACTIVE") {
-    return errorOutcome(409, "ROUND_CLOSED", ROUND_CLOSED_ERROR);
+    return {
+      ok: false,
+      error: errorOutcome(409, "ROUND_CLOSED", ROUND_CLOSED_ERROR),
+    };
   }
 
   // 4. The matchup itself must be votable (ACTIVE or TIE_BREAKER).
   if (!isVotableMatchupStatus(matchup.status)) {
-    return errorOutcome(409, "MATCHUP_NOT_VOTABLE", MATCHUP_NOT_VOTABLE_ERROR);
+    return {
+      ok: false,
+      error: errorOutcome(409, "MATCHUP_NOT_VOTABLE", MATCHUP_NOT_VOTABLE_ERROR),
+    };
   }
 
   // §4.4: which VotePhase this vote belongs to, derived from the matchup's
   // status at request time - never accepted from the client.
-  const phase = matchup.status === "TIE_BREAKER" ? "TIE_BREAKER" : "ORIGINAL";
+  const phase: VotePhase = matchup.status === "TIE_BREAKER" ? "TIE_BREAKER" : "ORIGINAL";
 
-  // 5. Voter identity resolution.
+  return { ok: true, value: { matchup, itemId, rawComment, phase } };
+}
+
+type VoterIdentity = {
+  voterKey: VoterLookupKey;
+  newAnonymousVoterId: string | null;
+};
+
+/**
+ * §4.7 step 5: voter identity resolution - the 3-way branch between a
+ * signed-in voter, an ACCOUNT_REQUIRED rejection, and anonymous-cookie
+ * verification/minting.
+ */
+async function resolveVoterIdentity(
+  request: NextRequest,
+  matchup: MatchupWithContext
+): Promise<StepResult<VoterIdentity>> {
   const userId = await getAuthenticatedUserId(request);
 
-  let voterKey: VoterLookupKey;
-  let newAnonymousVoterId: string | null = null;
   if (userId) {
-    voterKey = { userId };
-  } else if (matchup.round.bracket.votingRequirement === "ACCOUNT_REQUIRED") {
-    return errorOutcome(401, "SIGN_IN_REQUIRED", SIGN_IN_TO_VOTE_ERROR);
-  } else {
-    // Verifies the signature, not just reads the value - a missing cookie
-    // *and* a present-but-tampered/invalid-signature one both fall through
-    // to minting a fresh, freshly-signed id below (spec §4.10: "never a
-    // hard error").
-    const rawCookieValue = request.cookies.get(ANONYMOUS_VOTER_COOKIE)?.value;
-    let anonymousVoterIdentifier = rawCookieValue
-      ? verifyAnonymousVoterId(rawCookieValue)
-      : null;
-    if (!anonymousVoterIdentifier) {
-      anonymousVoterIdentifier = randomUUID();
-      newAnonymousVoterId = anonymousVoterIdentifier;
-    }
-    voterKey = { anonymousVoterIdentifier };
+    return { ok: true, value: { voterKey: { userId }, newAnonymousVoterId: null } };
   }
 
-  // 6. Existing-vote short-circuit - not an error: respond as if the vote
-  // succeeded, returning the existing choice. Not the sole source of truth
-  // on its own (two near-simultaneous requests from the same identity
-  // could both pass this) - see the P2002 catch below for the real guard.
-  const existingVote = await prisma.vote.findFirst({
-    where: { matchupId, phase, ...voterKey },
-  });
-  if (existingVote) {
+  if (matchup.round.bracket.votingRequirement === "ACCOUNT_REQUIRED") {
     return {
-      outcome: { kind: "success", votedItemId: existingVote.itemId, alreadyVoted: true },
-      newAnonymousVoterId,
+      ok: false,
+      error: errorOutcome(401, "SIGN_IN_REQUIRED", SIGN_IN_TO_VOTE_ERROR),
     };
   }
 
-  // 7. Rate limit - only reached once we know this would be a *new* Vote
-  // insert, so repeatedly re-submitting an already-voted matchup never
-  // counts against it.
+  // Verifies the signature, not just reads the value - a missing cookie
+  // *and* a present-but-tampered/invalid-signature one both fall through
+  // to minting a fresh, freshly-signed id below (spec §4.10: "never a
+  // hard error").
+  const rawCookieValue = request.cookies.get(ANONYMOUS_VOTER_COOKIE)?.value;
+  let anonymousVoterIdentifier = rawCookieValue
+    ? verifyAnonymousVoterId(rawCookieValue)
+    : null;
+  let newAnonymousVoterId: string | null = null;
+  if (!anonymousVoterIdentifier) {
+    anonymousVoterIdentifier = randomUUID();
+    newAnonymousVoterId = anonymousVoterIdentifier;
+  }
+
+  return {
+    ok: true,
+    value: { voterKey: { anonymousVoterIdentifier }, newAnonymousVoterId },
+  };
+}
+
+/**
+ * §4.7 step 6: existing-vote short-circuit - not an error: the caller
+ * responds as if the vote succeeded, returning the existing choice. Not
+ * the sole source of truth on its own (two near-simultaneous requests from
+ * the same identity could both pass this) - see
+ * `insertVoteWithRaceRecovery`'s P2002 catch for the real guard.
+ */
+function findExistingVote(
+  matchupId: string,
+  phase: VotePhase,
+  voterKey: VoterLookupKey
+) {
+  return prisma.vote.findFirst({ where: { matchupId, phase, ...voterKey } });
+}
+
+/**
+ * §4.7 step 7: rate limit - only meant to be consulted once the caller
+ * knows this would be a *new* Vote insert, so repeatedly re-submitting an
+ * already-voted matchup never counts against it.
+ */
+async function checkRateLimit(voterKey: VoterLookupKey): Promise<boolean> {
   const recentVoteCount = await prisma.vote.count({
     where: {
       ...voterKey,
       createdAt: { gte: new Date(Date.now() - VOTE_RATE_LIMIT_WINDOW_MS) },
     },
   });
-  if (recentVoteCount >= VOTE_RATE_LIMIT_MAX_VOTES) {
-    return {
-      outcome: { kind: "error", status: 429, code: "RATE_LIMITED", message: RATE_LIMIT_ERROR },
-      newAnonymousVoterId,
-    };
-  }
+  return recentVoteCount >= VOTE_RATE_LIMIT_MAX_VOTES;
+}
 
-  // 8. Optional comment: trimmed; whitespace-only -> null; over 500 chars
-  // -> rejected (never silently truncated). Checked here, not earlier
-  // alongside the matchup/round/item checks: those are all "is this vote
-  // even attemptable" checks independent of whether a Vote is actually
-  // about to be created, so a stale/oversized comment never overrides the
-  // existing-vote short-circuit above.
+/**
+ * §4.7 step 8: optional comment - trimmed; whitespace-only -> null; over
+ * 500 chars -> rejected (never silently truncated). Checked only once the
+ * caller knows a Vote is actually about to be created, so a stale/oversized
+ * comment never overrides the existing-vote short-circuit (step 6).
+ */
+function validateComment(
+  rawComment: string
+): { ok: true; comment: string | null } | { ok: false } {
   const trimmedComment = rawComment.trim();
   if (trimmedComment.length > MAX_COMMENT_LENGTH) {
-    return {
-      outcome: { kind: "error", status: 400, code: "COMMENT_TOO_LONG", message: COMMENT_TOO_LONG_ERROR },
-      newAnonymousVoterId,
-    };
+    return { ok: false };
   }
-  const comment = trimmedComment.length > 0 ? trimmedComment : null;
+  return { ok: true, comment: trimmedComment.length > 0 ? trimmedComment : null };
+}
 
-  // 9. Insert the vote - race-safe via the same unique-constraint recovery
-  // pattern as the Server Action: `prisma/schema.prisma`'s
-  // `@@unique([matchupId, userId, phase])` /
-  // `@@unique([matchupId, anonymousVoterIdentifier, phase])` reject the
-  // losing insert at the database level; recovered the same way as the
-  // proactive-check path above (the voter's existing choice, not an
-  // error), never surfacing the constraint violation to the caller.
+/**
+ * §4.7 step 9: insert the vote - race-safe via the same unique-constraint
+ * recovery pattern as the Server Action: `prisma/schema.prisma`'s
+ * `@@unique([matchupId, userId, phase])` /
+ * `@@unique([matchupId, anonymousVoterIdentifier, phase])` reject the
+ * losing insert at the database level; recovered the same way as the
+ * proactive-check path (`findExistingVote`) above (the voter's existing
+ * choice, not an error), never surfacing the constraint violation to the
+ * caller.
+ */
+async function insertVoteWithRaceRecovery(params: {
+  matchupId: string;
+  itemId: string;
+  phase: VotePhase;
+  voterKey: VoterLookupKey;
+  comment: string | null;
+}): Promise<{ votedItemId: string; alreadyVoted: boolean }> {
+  const { matchupId, itemId, phase, voterKey, comment } = params;
   try {
     const created = await prisma.vote.create({
       data: {
@@ -257,33 +334,86 @@ async function castVoteViaApi(
         phase,
       },
     });
-    return {
-      outcome: { kind: "success", votedItemId: created.itemId, alreadyVoted: false },
-      newAnonymousVoterId,
-    };
+    return { votedItemId: created.itemId, alreadyVoted: false };
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
       const existingAfterRace = await prisma.vote.findFirst({
         where: { matchupId, phase, ...voterKey },
       });
       return {
-        outcome: {
-          kind: "success",
-          // Defensive fallback only: existingAfterRace should always be
-          // found here (that's exactly why the insert above raced), but
-          // unlike the Server Action's VoteFormState (which allows
-          // votedItemId: null), docs/openapi.yaml's CastVoteResponse
-          // requires a string - fall back to the item just attempted
-          // rather than violate the response schema in this
-          // near-impossible case.
-          votedItemId: existingAfterRace?.itemId ?? itemId,
-          alreadyVoted: true,
-        },
-        newAnonymousVoterId,
+        // Defensive fallback only: existingAfterRace should always be
+        // found here (that's exactly why the insert above raced), but
+        // unlike the Server Action's VoteFormState (which allows
+        // votedItemId: null), docs/openapi.yaml's CastVoteResponse
+        // requires a string - fall back to the item just attempted
+        // rather than violate the response schema in this
+        // near-impossible case.
+        votedItemId: existingAfterRace?.itemId ?? itemId,
+        alreadyVoted: true,
       };
     }
     throw err;
   }
+}
+
+/**
+ * The slim orchestrator for the ordered rule list (spec §4.7, numbered
+ * 1-9 in the step functions' own comments above). Every step is a real,
+ * independent check against the database - never trusting that a client
+ * only ever sent a request that could have come from a reachable vote
+ * button.
+ */
+async function castVoteViaApi(
+  request: NextRequest,
+  matchupId: string
+): Promise<CastVoteResult> {
+  const validated = await validateMatchupAndItem(request, matchupId);
+  if (!validated.ok) {
+    return { outcome: validated.error, newAnonymousVoterId: null };
+  }
+  const { matchup, itemId, rawComment, phase } = validated.value;
+
+  const identity = await resolveVoterIdentity(request, matchup);
+  if (!identity.ok) {
+    return { outcome: identity.error, newAnonymousVoterId: null };
+  }
+  const { voterKey, newAnonymousVoterId } = identity.value;
+
+  const existingVote = await findExistingVote(matchupId, phase, voterKey);
+  if (existingVote) {
+    return {
+      outcome: { kind: "success", votedItemId: existingVote.itemId, alreadyVoted: true },
+      newAnonymousVoterId,
+    };
+  }
+
+  if (await checkRateLimit(voterKey)) {
+    return {
+      outcome: { kind: "error", status: 429, code: "RATE_LIMITED", message: RATE_LIMIT_ERROR },
+      newAnonymousVoterId,
+    };
+  }
+
+  const validatedComment = validateComment(rawComment);
+  if (!validatedComment.ok) {
+    return {
+      outcome: { kind: "error", status: 400, code: "COMMENT_TOO_LONG", message: COMMENT_TOO_LONG_ERROR },
+      newAnonymousVoterId,
+    };
+  }
+
+  const { votedItemId, alreadyVoted } = await insertVoteWithRaceRecovery({
+    matchupId,
+    itemId,
+    phase,
+    voterKey,
+    comment: validatedComment.comment,
+  });
+
+  return {
+    outcome: { kind: "success", votedItemId, alreadyVoted },
+    newAnonymousVoterId,
+  };
 }
 
 function outcomeToResponse(outcome: VoteOutcome): NextResponse {
