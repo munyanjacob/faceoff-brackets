@@ -4,7 +4,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Countdown } from "@/components/countdown";
-import { votingService, toServiceError, type BracketItem } from "@/services";
+import { votingService, type BracketItem } from "@/services";
+import { queryKeys } from "@/lib/queryKeys";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 export const Route = createFileRoute("/brackets/$bracketId/matchups/$matchupId/")({
   head: () => ({
@@ -67,11 +69,10 @@ function VotePage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [comment, setComment] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy, error, run } = useAsyncAction();
 
   const { data, isLoading } = useQuery({
-    queryKey: ["matchup", bracketId, matchupId],
+    queryKey: queryKeys.matchup(bracketId, matchupId),
     queryFn: () => votingService.getMatchup(bracketId, matchupId),
   });
 
@@ -85,20 +86,14 @@ function VotePage() {
   const voteCounts = voter.kind === "eligible" ? voter.voteCounts : null;
 
   async function vote(itemId: string) {
-    setError(null);
-    setBusy(true);
-    try {
+    await run(async () => {
       await votingService.castVote(matchupId, {
         itemId,
         comment: comment.trim() || undefined,
       });
-      await queryClient.invalidateQueries({ queryKey: ["matchup", bracketId, matchupId] });
-      await queryClient.invalidateQueries({ queryKey: ["matchups", bracketId] });
-    } catch (caught) {
-      setError(toServiceError(caught).message);
-    } finally {
-      setBusy(false);
-    }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.matchup(bracketId, matchupId) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.matchups(bracketId) });
+    });
   }
 
   return (

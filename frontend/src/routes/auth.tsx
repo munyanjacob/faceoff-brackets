@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useSession } from "@/hooks/useSession";
-import { authService, toServiceError } from "@/services";
+import { authService } from "@/services";
+import { useAsyncAction } from "@/hooks/useAsyncAction";
 
 export const Route = createFileRoute("/auth")({
   head: () => ({
@@ -24,9 +25,8 @@ function AuthPage() {
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const { busy, error, setError, run } = useAsyncAction();
   const { session } = useSession();
   const navigate = useNavigate();
 
@@ -36,10 +36,8 @@ function AuthPage() {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    setError(null);
     setNotice(null);
-    setBusy(true);
-    try {
+    await run(async () => {
       if (mode === "login") {
         await authService.login(email, password);
         navigate({ to: "/dashboard" });
@@ -47,11 +45,7 @@ function AuthPage() {
         const result = await authService.signup(email, password);
         setNotice(result.message);
       }
-    } catch (caught) {
-      setError(toServiceError(caught).message);
-    } finally {
-      setBusy(false);
-    }
+    });
   }
 
   return (

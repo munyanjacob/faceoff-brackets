@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { resultsService, type MatchupCell } from "@/services";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/brackets/$bracketId/tree")({
   head: () => ({
@@ -83,7 +84,7 @@ function Cell({ bracketId, cell }: { bracketId: string; cell: MatchupCell }) {
 function TreePage() {
   const { bracketId } = Route.useParams();
   const { data, isLoading } = useQuery({
-    queryKey: ["tree", bracketId],
+    queryKey: queryKeys.tree(bracketId),
     queryFn: () => resultsService.getBracketTree(bracketId),
   });
 

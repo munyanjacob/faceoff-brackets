@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { StatusPill } from "@/components/status-pill";
 import { bracketService, votingService, type MatchupSummary } from "@/services";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/brackets/$bracketId/")({
   head: () => ({
@@ -64,12 +65,12 @@ function BracketPage() {
   const navigate = useNavigate();
 
   const { data: bracket } = useQuery({
-    queryKey: ["bracket", bracketId],
+    queryKey: queryKeys.bracket(bracketId),
     queryFn: () => bracketService.get(bracketId),
   });
 
   const { data, isLoading } = useQuery({
-    queryKey: ["matchups", bracketId],
+    queryKey: queryKeys.matchups(bracketId),
     queryFn: () => votingService.getVotableMatchups(bracketId),
   });
 

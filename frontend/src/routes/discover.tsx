@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { StatusPill } from "@/components/status-pill";
 import { discoveryService, type DiscoverRow } from "@/services";
+import { queryKeys } from "@/lib/queryKeys";
 
 export const Route = createFileRoute("/discover")({
   head: () => ({
@@ -51,7 +52,7 @@ function Section({ title, rows, empty }: { title: string; rows: DiscoverRow[]; e
 
 function Discover() {
   const { data, isLoading } = useQuery({
-    queryKey: ["discover"],
+    queryKey: queryKeys.discover(),
     queryFn: () => discoveryService.listPublic(),
   });
 
