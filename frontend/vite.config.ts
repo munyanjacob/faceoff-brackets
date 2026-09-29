@@ -28,6 +28,14 @@ export default defineConfig({
     // PostCSS resolution to this project and skips that upward search.
     postcss: {},
   },
+  // The SPA build's prerender step starts `vite preview` and fetches the
+  // shell from the URL it reports ("http://localhost:<port>"). Bound to
+  // "localhost", the server can end up listening on IPv6 ::1 only while
+  // Node's fetch resolves "localhost" to 127.0.0.1 - which is what happens
+  // inside the node:*-bookworm-slim Docker image, failing the build with
+  // ECONNREFUSED 127.0.0.1:3000. Pinning an explicit IPv4 host keeps the
+  // listener and the reported URL on the same address.
+  preview: { host: "127.0.0.1" },
   plugins: [
     viteTsConfigPaths({
       projects: ["./tsconfig.json"],
