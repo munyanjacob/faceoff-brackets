@@ -18,7 +18,7 @@ import {
  * every later round is only created once `evaluateRound`
  * (`@/lib/rounds/evaluate-round.ts`, #20) closes the one before it. That
  * means an in-progress bracket's later rounds - the ones
- * `_docs/outdated/plan.md` SS14's mockup shows as empty "Semifinal"/"Final"
+ * `_docs/product/plan.md` SS14's mockup shows as empty "Semifinal"/"Final"
  * columns converging toward a champion - genuinely have no `Matchup` rows
  * in the database yet. To render the *whole* tree structure (not just
  * "however many rounds happen to exist so far"), this module works out the

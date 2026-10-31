@@ -4,7 +4,7 @@ import type { ChampionState } from "./champion-view-model";
 /**
  * `/brackets/[id]/tree`'s presentational content (issue #30): the full
  * bracket tree, every round rendered as its own column, converging toward a
- * champion per `_docs/outdated/plan.md` SS14's mockup. Deliberately a
+ * champion per `_docs/product/plan.md` SS14's mockup. Deliberately a
  * sibling of `../matchup-voting.tsx`, not a replacement for it - that file
  * still owns the single-matchup voting UI; this one is read-only and shows
  * the whole tournament shape at once (issue #30's "not just the current

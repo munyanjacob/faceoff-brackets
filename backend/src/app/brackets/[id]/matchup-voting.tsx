@@ -39,7 +39,7 @@ import type {
  * `item-row.test.tsx`).
  *
  * Issue #23's comment field is rendered below both items (per
- * `_docs/outdated/plan.md` SS13's mockup - image+title stacked per item, a
+ * `_docs/product/plan.md` SS13's mockup - image+title stacked per item, a
  * vote button under each, an optional comment field below both), not
  * duplicated per item - see `./comment-field.tsx`'s top comment for how its
  * value reaches whichever of the two `<VoteButton>`s actually gets

@@ -16,7 +16,7 @@ That plan has since shipped as described. §1-§8 below are largely unchanged fr
 
 ## 1. What this application does (product summary)
 
-A timed, head-to-head bracket/tournament voting app. A signed-in creator builds a bracket from manually-entered items (title + optional description + optional image), configures visibility, voting-account requirements, round durations, and start timing, then publishes it. Voters (who may or may not need an account, per the creator's choice) vote on one item per matchup, optionally with a comment. Rounds close automatically on a timer; winners advance; ties trigger a short revote, then a random tie-break; the bracket ends with a single champion. Full product rules: `_docs/outdated/plan.md` (moved from the path AGENTS.md references — read it there).
+A timed, head-to-head bracket/tournament voting app. A signed-in creator builds a bracket from manually-entered items (title + optional description + optional image), configures visibility, voting-account requirements, round durations, and start timing, then publishes it. Voters (who may or may not need an account, per the creator's choice) vote on one item per matchup, optionally with a comment. Rounds close automatically on a timer; winners advance; ties trigger a short revote, then a random tie-break; the bracket ends with a single champion. Full product rules: `_docs/product/plan.md` (moved from the path AGENTS.md references — read it there).
 
 The current UI is the unmodified `create-next-app` scaffold plus minimal unstyled server-rendered forms — there is no design system to preserve. The frontend agent has full visual/UX latitude; what must be preserved is the **behavior**: every validation rule, error message, state transition, and timing rule cataloged below.
 
@@ -26,7 +26,7 @@ The current UI is the unmodified `create-next-app` scaffold plus minimal unstyle
 
 Single Next.js 16 (App Router) app, `src/app/`. Every mutation is a Server Action (`"use server"` files); every read is a Server Component doing a direct `prisma` query at render time — there is no existing REST/JSON API. Auth is Supabase Auth via `@supabase/ssr`, session carried in cookies, refreshed on every request by `src/proxy.ts`. Anonymous (no-account) voting is identified by an HMAC-signed, httpOnly cookie (`voter_id`) minted by the vote action itself. Images upload to Supabase Storage using the **service-role key** from server-only code — ownership is enforced entirely at the application layer (Prisma bypasses Postgres RLS; the Storage bucket has no anon/authenticated insert policy).
 
-Stack (pinned in `_docs/outdated/architecture.md`, not to be changed without asking, per `AGENTS.md`):
+Stack (pinned in `_docs/product/architecture.md`, not to be changed without asking, per `AGENTS.md`):
 - Next.js 16.3.5, TypeScript 7.0.2, React 19.2.8
 - Prisma 7.10.0 + `@prisma/adapter-pg` against Postgres 17 (Supabase-hosted)
 - Supabase Auth (`@supabase/supabase-js` 2.116.0, `@supabase/ssr` 0.12.7) + Supabase Storage

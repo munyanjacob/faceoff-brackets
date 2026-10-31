@@ -3,7 +3,7 @@
 /**
  * Guards against a real, verified npm bin-linking collision introduced by
  * adding `@typescript/typescript6` as a devDependency (see issue #39 and
- * _docs/outdated/architecture.md for the full story).
+ * _docs/product/architecture.md for the full story).
  *
  * `@typescript/typescript6` depends on `@typescript/old`, which is simply
  * `typescript@6.x` installed under an alias name. That package declares

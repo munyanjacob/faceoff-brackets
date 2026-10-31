@@ -1,5 +1,5 @@
 // Prisma 7 no longer auto-loads .env files, and this project keeps its real
-// env vars in .env.local (not .env) per _docs/architecture.md. Load it
+// env vars in .env.local (not .env) per _docs/product/architecture.md. Load it
 // explicitly with Node's built-in loader so `prisma migrate dev`, `prisma
 // migrate status`, and `prisma studio` can resolve DATABASE_URL/DIRECT_URL
 // from schema.prisma's datasource block without adding a dotenv dependency.

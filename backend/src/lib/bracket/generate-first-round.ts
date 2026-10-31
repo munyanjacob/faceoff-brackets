@@ -9,7 +9,7 @@
  * A single first-round pairing.
  *
  * `itemB` is `null` when `itemA` received a bye: it advances automatically
- * without a vote (see `_docs/outdated/plan.md` SS6).
+ * without a vote (see `_docs/product/plan.md` SS6).
  */
 export interface Matchup<T> {
   itemA: T;
@@ -19,7 +19,7 @@ export interface Matchup<T> {
 /**
  * Seeds a single-elimination first round from an ordered list of items.
  *
- * Seeding rules (see issue #17 and `_docs/outdated/plan.md` SS6):
+ * Seeding rules (see issue #17 and `_docs/product/plan.md` SS6):
  * - Byes go to the first N items in input order (`BracketItem.seed`
  *   ascending — the order the creator entered them). There is no
  *   skill-based or random seeding in the MVP.

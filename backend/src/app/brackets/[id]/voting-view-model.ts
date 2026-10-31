@@ -9,7 +9,7 @@
  * ## What "the active matchup" means here
  *
  * The issue asks for a page that shows "the active matchup's two items" -
- * singular - and `_docs/outdated/plan.md` SS13's mockup shows exactly one
+ * singular - and `_docs/product/plan.md` SS13's mockup shows exactly one
  * "Current Matchup" panel per bracket page. A bracket has an active matchup
  * only when:
  *

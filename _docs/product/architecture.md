@@ -2,7 +2,7 @@
 
 ## Stack decision
 
-Chosen from the options evaluated for `_docs/plan.md`:
+Chosen from the options evaluated for `_docs/product/plan.md`:
 
 - **Runtime**: Node.js 24 (current LTS line; Node 26 doesn't reach LTS until October 2026)
 - **Framework**: Next.js 16.3.5 (TypeScript, App Router), single full-stack app
@@ -120,7 +120,7 @@ These become environment variables (see below); real values live in `.env.local`
 
 ## Phase 1: Foundation
 
-Scoped from `_docs/plan.md` §21's "Recommended Development Order" — project setup, database, authentication, user model. Everything later (bracket creation, bracket engine, voting, timing, results) builds on this. Later phases get their own architecture notes/plans once this lands.
+Scoped from `_docs/product/plan.md` §21's "Recommended Development Order" — project setup, database, authentication, user model. Everything later (bracket creation, bracket engine, voting, timing, results) builds on this. Later phases get their own architecture notes/plans once this lands.
 
 **In scope**: repo/tooling setup, full Prisma schema for the data model (defined up front so later phases don't need schema churn), Supabase Auth wiring (sign up/log in/log out, session middleware, protected routes), a `Profile` table synced to Supabase's `auth.users`, a stub creator dashboard route, and scaffolding (route + config) for the round-advancement cron job with a no-op implementation for now.
 

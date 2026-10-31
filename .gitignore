@@ -50,3 +50,7 @@ backend/src/generated/prisma
 
 # parallel-agent git worktrees
 /.worktrees/
+
+# Claude Code local session files
+/.claude/worktrees/
+/.claude/*.lock

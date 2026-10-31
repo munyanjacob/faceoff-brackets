@@ -8,7 +8,7 @@
  * ## What "Recent" means here
  *
  * The issue names exactly three groups - Recent, Active, Completed - and
- * (per grooming/`_docs/outdated/plan.md` SS12) explicitly rules out any
+ * (per grooming/`_docs/product/plan.md` SS12) explicitly rules out any
  * ranking/recommendation logic, so "Recent" can't be a second, overlapping
  * "recently published" view across all statuses (that would let a bracket
  * appear in two groups at once, e.g. a just-published ACTIVE bracket

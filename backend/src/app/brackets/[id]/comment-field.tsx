@@ -6,7 +6,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
  * Issue #23's optional vote comment: a single textarea shared by both of a
  * matchup's `<VoteButton>`s (`./vote-button.tsx`), rendered once "below
  * both" per `./matchup-voting.tsx`'s top comment (which itself quotes
- * `_docs/outdated/plan.md` SS13's mockup) rather than duplicated per item.
+ * `_docs/product/plan.md` SS13's mockup) rather than duplicated per item.
  *
  * A matchup only ever has one vote-and-comment action, but that action is
  * invoked from *two* independent `<form>`s (one per item's `<VoteButton>`,

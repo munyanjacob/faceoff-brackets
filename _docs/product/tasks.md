@@ -1,20 +1,20 @@
 # Backlog — Bracket Polling App
 
-Tasks assume the reader has access to `_docs/plan.md` (product spec) and `_docs/architecture.md` (stack/schema decisions), but not this file's other tasks or any prior discussion. Each task is scoped to one session. Later tasks depend on earlier ones existing in the codebase, but each description is self-contained about what to build and why.
+Tasks assume the reader has access to `_docs/product/plan.md` (product spec) and `_docs/product/architecture.md` (stack/schema decisions), but not this file's other tasks or any prior discussion. Each task is scoped to one session. Later tasks depend on earlier ones existing in the codebase, but each description is self-contained about what to build and why.
 
 ## Phase 1 — Foundation
 
 ### 1. Set up an empty project with a passing test
 Goal: Get a scaffolded, testable Next.js project into the repo.
-Description: Initialize a Next.js (TypeScript, App Router) project using the versions pinned in `_docs/architecture.md`, add a test runner (e.g. Vitest), and write one trivial test (e.g. a smoke test on a placeholder function or component) so `npm test` passes. Commit the scaffold.
+Description: Initialize a Next.js (TypeScript, App Router) project using the versions pinned in `_docs/product/architecture.md`, add a test runner (e.g. Vitest), and write one trivial test (e.g. a smoke test on a placeholder function or component) so `npm test` passes. Commit the scaffold.
 
 ### 2. Configure Supabase project and environment variables
 Goal: Connect the app to a real Supabase backend.
-Description: Create (or confirm access to) a Supabase project, then populate `.env.local` from a checked-in `.env.example` with the project URL, anon key, service role key, and Postgres connection strings per `_docs/architecture.md`. Verify the app boots with these values present; never commit real secrets.
+Description: Create (or confirm access to) a Supabase project, then populate `.env.local` from a checked-in `.env.example` with the project URL, anon key, service role key, and Postgres connection strings per `_docs/product/architecture.md`. Verify the app boots with these values present; never commit real secrets.
 
 ### 3. Add Prisma and define the core schema
 Goal: Model brackets, items, rounds, matchups, and votes in Postgres.
-Description: Install Prisma at the pinned version and write `prisma/schema.prisma` covering `Profile`, `Bracket`, `BracketItem`, `Round`, `Matchup`, and `Vote` using the field list in `_docs/architecture.md`. Run the initial migration against the Supabase database and confirm the tables exist.
+Description: Install Prisma at the pinned version and write `prisma/schema.prisma` covering `Profile`, `Bracket`, `BracketItem`, `Round`, `Matchup`, and `Vote` using the field list in `_docs/product/architecture.md`. Run the initial migration against the Supabase database and confirm the tables exist.
 
 ### 4. Add Supabase Auth client helpers
 Goal: Make Supabase Auth usable from both server and browser code.
@@ -38,7 +38,7 @@ Description: Build `/dashboard` to query brackets owned by the signed-in user an
 
 ### 9. Scaffold the round-advancement cron endpoint
 Goal: Put the infrastructure for scheduled round advancement in place before the logic exists.
-Description: Add an API route (e.g. `/api/cron/advance-rounds`) that checks a bearer token against a `CRON_SECRET` env var and returns 200 with no other behavior yet. Add a `vercel.json` cron entry that calls it on a schedule, per the caveats noted in `_docs/architecture.md`.
+Description: Add an API route (e.g. `/api/cron/advance-rounds`) that checks a bearer token against a `CRON_SECRET` env var and returns 200 with no other behavior yet. Add a `vercel.json` cron entry that calls it on a schedule, per the caveats noted in `_docs/product/architecture.md`.
 
 ## Phase 2 — Bracket Creation
 
@@ -74,7 +74,7 @@ Description: Add a "Publish" action on the draft bracket page that transitions `
 
 ### 17. Implement the bracket-generation algorithm
 Goal: Turn a flat list of items into a seeded single-elimination structure.
-Description: Write a pure function taking an ordered list of items and returning the first-round pairing structure, including byes for non-power-of-two counts, with no dependency on the database or UI so it can be unit tested directly. Cover the examples in `_docs/plan.md` §6 (4, 8, 10, and 16 items).
+Description: Write a pure function taking an ordered list of items and returning the first-round pairing structure, including byes for non-power-of-two counts, with no dependency on the database or UI so it can be unit tested directly. Cover the examples in `_docs/product/plan.md` §6 (4, 8, 10, and 16 items).
 
 ### 18. Persist generated rounds and matchups
 Goal: Turn the generated structure into real database rows.
@@ -92,7 +92,7 @@ Description: Write the function that closes an active round, collects each match
 
 ### 21. Build the matchup voting page
 Goal: Show voters the current matchup and let them cast a vote.
-Description: Build the page showing item A and item B side-by-side (image, title, description) with a vote action under each, matching the layout in `_docs/plan.md` §13. Vote submission itself is handled in the next task.
+Description: Build the page showing item A and item B side-by-side (image, title, description) with a vote action under each, matching the layout in `_docs/product/plan.md` §13. Vote submission itself is handled in the next task.
 
 ### 22. Implement vote submission with duplicate prevention
 Goal: Record a vote exactly once per voter per matchup.
@@ -122,17 +122,17 @@ Description: Replace the no-op cron endpoint (scaffolded in an earlier task) wit
 
 ### 28. Implement scheduled bracket starts
 Goal: Make a bracket with a future start time go live automatically.
-Description: Extend the cron logic to detect `SCHEDULED` brackets whose `scheduled_start_at` has passed, transition them to `ACTIVE`, and generate their first round. Also ensure the bracket-viewer page shows a "not started yet, starts at X" state beforehand, per `_docs/plan.md` §9.
+Description: Extend the cron logic to detect `SCHEDULED` brackets whose `scheduled_start_at` has passed, transition them to `ACTIVE`, and generate their first round. Also ensure the bracket-viewer page shows a "not started yet, starts at X" state beforehand, per `_docs/product/plan.md` §9.
 
 ### 29. Implement tie-breaker handling
 Goal: Resolve tied matchups without stalling the bracket.
-Description: When round-closing finds a tied matchup, put it into a tie-breaker state for 25% of the round's duration (minimum 1 hour) instead of immediately deciding a winner. Add cron logic to resolve tie-breaker matchups once their window ends, using the tie-breaker vote if decisive and otherwise picking randomly, per `_docs/plan.md` §11.
+Description: When round-closing finds a tied matchup, put it into a tie-breaker state for 25% of the round's duration (minimum 1 hour) instead of immediately deciding a winner. Add cron logic to resolve tie-breaker matchups once their window ends, using the tie-breaker vote if decisive and otherwise picking randomly, per `_docs/product/plan.md` §11.
 
 ## Phase 6 — Results
 
 ### 30. Build the full bracket visualization
 Goal: Show the whole tournament tree, not just the current matchup.
-Description: Build a page/component rendering every round's matchups as a bracket tree (per the diagram in `_docs/plan.md` §14), visually distinguishing completed, in-progress, and upcoming matchups.
+Description: Build a page/component rendering every round's matchups as a bracket tree (per the diagram in `_docs/product/plan.md` §14), visually distinguishing completed, in-progress, and upcoming matchups.
 
 ### 31. Build the completed-matchup detail view
 Goal: Show the full history of a decided matchup.
@@ -144,17 +144,17 @@ Description: When a bracket's final matchup completes, show a distinct champion 
 
 ### 33. Populate the creator dashboard with grouped, real data
 Goal: Make the dashboard useful once real brackets exist.
-Description: Update the dashboard built in an earlier task to group the creator's brackets into Drafts, Scheduled, Active, and Completed sections per `_docs/plan.md` §16, each entry linking to the right view/manage page.
+Description: Update the dashboard built in an earlier task to group the creator's brackets into Drafts, Scheduled, Active, and Completed sections per `_docs/product/plan.md` §16, each entry linking to the right view/manage page.
 
 ## Phase 7 — Polish
 
 ### 34. Build the public discovery page
 Goal: Let anyone browse public brackets without a direct link.
-Description: Build a page listing public brackets grouped into Recent, Active, and Completed per `_docs/plan.md` §12, excluding any bracket marked private, with no ranking or recommendation logic.
+Description: Build a page listing public brackets grouped into Recent, Active, and Completed per `_docs/product/plan.md` §12, excluding any bracket marked private, with no ranking or recommendation logic.
 
 ### 35. Add anonymous-voter abuse protections
 Goal: Make duplicate anonymous voting meaningfully harder without over-engineering it.
-Description: Harden the anonymous voter identifier used for vote submission (e.g. a signed cookie plus basic rate limiting on the vote endpoint) so casual duplicate voting is discouraged, explicitly not aiming for election-grade fraud prevention, per `_docs/plan.md` §7.
+Description: Harden the anonymous voter identifier used for vote submission (e.g. a signed cookie plus basic rate limiting on the vote endpoint) so casual duplicate voting is discouraged, explicitly not aiming for election-grade fraud prevention, per `_docs/product/plan.md` §7.
 
 ### 36. Add validation and error/empty/loading states across the app
 Goal: Make the app feel finished rather than merely functional.
@@ -162,4 +162,4 @@ Description: Pass over the bracket-creation, voting, and dashboard flows to add 
 
 ### 37. Add automated tests for the bracket engine
 Goal: Lock in correctness of the trickiest logic before it's touched again.
-Description: Write unit tests for the bracket-generation, winner-determination, round-closing, and tie-breaker functions built in earlier tasks, covering the item-count examples and tie scenarios described in `_docs/plan.md`.
+Description: Write unit tests for the bracket-generation, winner-determination, round-closing, and tie-breaker functions built in earlier tasks, covering the item-count examples and tie scenarios described in `_docs/product/plan.md`.

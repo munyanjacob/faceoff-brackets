@@ -7,7 +7,7 @@
  * `@typescript-eslint/*`, plus sibling helper packages such as
  * `ts-api-utils`) is built against the classic TypeScript <6.1 Compiler
  * API (`ts.createProgram`, `ts.SyntaxKind`, etc). This repo pins
- * `typescript@^7.0.2` (see _docs/outdated/architecture.md), and TS 7's
+ * `typescript@^7.0.2` (see _docs/product/architecture.md), and TS 7's
  * package no longer exports that API at all - only the new
  * `./unstable/*` native-compiler entry points. Loading `typescript-eslint`
  * against real TS 7 throws immediately (its own version guard, or a raw

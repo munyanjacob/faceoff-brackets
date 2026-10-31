@@ -55,7 +55,7 @@ describe("generateFirstRound", () => {
     ]);
 
     // Byes plus match winners (one per matchup) produce exactly 8 entrants
-    // for round 2, per _docs/outdated/plan.md SS6.
+    // for round 2, per _docs/product/plan.md SS6.
     expect(byes.length + matchups.length).toBe(8);
   });
 

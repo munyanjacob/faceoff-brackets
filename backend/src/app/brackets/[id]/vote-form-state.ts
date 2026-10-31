@@ -30,7 +30,7 @@ export const RATE_LIMIT_ERROR =
  * than a short reaction (a couple of sentences) while still keeping a
  * `Vote` row's comment skimmable in a results list - the same "casual
  * polling, not a discussion forum" scope `./vote-actions.ts`'s rate-limit
- * comment above cites from `_docs/outdated/plan.md` SS7/SS8 (comment
+ * comment above cites from `_docs/product/plan.md` SS7/SS8 (comment
  * *threads*, replies, likes are explicitly out of scope for the whole
  * MVP). Stated here, not just picked silently, per the issue's "pick a
  * specific number and state it" ask - also called out in the issue #23
@@ -61,7 +61,7 @@ export const COMMENT_TOO_LONG_ERROR = `Comments can be at most ${MAX_COMMENT_LEN
  *     inserts per 10 minutes (120/hour at best even retrying constantly),
  *     which meaningfully blunts a casual scripted attack without needing
  *     it to be airtight - this app is explicitly "casual polling, not
- *     election-grade" (`_docs/outdated/plan.md` SS7).
+ *     election-grade" (`_docs/product/plan.md` SS7).
  *   - Does not, and per #35 is not meant to, stop an attacker who clears
  *     cookies between batches to get a fresh identifier - that reset is
  *     explicitly accepted as out of scope (it's inherent to a
